@@ -14,6 +14,9 @@ Requirements
 4. gengetopt
 5. zeromq (optional)
 
+Mutilate has only been thoroughly tested on Ubuntu 11.10.  We'll flesh
+out compatibility over time.
+
 Building
 ========
 
