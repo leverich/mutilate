@@ -1,0 +1,79 @@
+package "mutilate3"
+version "0.1"
+usage "mutilate -s server[:port] [options]"
+description "\"High-performance\" memcached benchmarking tool"
+
+args "-c cc --show-required -C --default-optional -l"
+
+option "verbose" v "Verbosity. Repeat for more verbose." multiple
+option "quiet" - "Disable log messages."
+
+text "\nBasic options:"
+
+option "server" s "Memcached server hostname[:port].  \
+Repeat to specify multiple servers." string multiple
+option "qps" q "Target aggregate QPS." int default="0"
+option "time" t "Maximum time to run (seconds)." int default="5"
+
+option "keysize" K "Length of memcached keys (distribution)."
+       string default="30"
+option "valuesize" V "Length of memcached values (distribution)."
+       string default="200"
+
+option "records" r "Number of memcached records to use.  \
+If multiple memcached servers are given, this number is divided \
+by the number of servers." int default="10000"
+
+option "update" u "Ratio of set:get commands." float default="0.0"
+
+text "\nAdvanced options:"
+
+option "threads" T "Number of threads to spawn." int default="1"
+option "connections" c "Connections to establish per server." int default="1"
+option "depth" d "Maximum depth to pipeline requests." int default="1"
+option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
+By default, each thread connects to every server."
+
+option "iadist" i "Inter-arrival distribution (distribution)."
+       string default="exponential"
+
+option "noload" - "Skip database loading."
+option "loadonly" - "Load database and then exit."
+
+option "blocking" B "Use blocking epoll().  May increase latency."
+option "no_nodelay" D "Don't use TCP_NODELAY."
+
+option "warmup" w "Warmup time before starting measurement." int
+option "wait" W "Time to wait after startup to start measurement." int
+
+option "search" S "Search for the QPS where N-order statistic < Xus.  \
+(i.e. --search 95:1000 means find the QPS where 95% of requests are \
+faster than 1000us)." string typestr="N:X"
+option "scan" - "Scan latency across QPS rates from min to max."
+       string typestr="min:max:step"
+
+text "\nAgent-mode options:"
+option "agentmode" A "Run client in agent mode."
+option "agent" a "Enlist remote agent." string typestr="host" multiple
+option "lambda_mul" l "Lambda multiplier.  Increases share of QPS for this client." int default="1"
+
+text "
+Some options take a 'distribution' as an argument.
+Distributions are specified by <distribution>[:<param1>[,...]].
+Parameters are not required.  The following distributions are supported:
+
+   [fixed:]<value>            Always generates <value>.
+   uniform:<max>              Uniform distribution between 0 and <max>.
+   normal:<mean>,<sd>         Normal distribution.
+   exponential:<lambda>       Exponential distribution.
+   pareto:<scale>,<shape>     Generalized Pareto distribution.
+   gev:<loc>,<scale>,<shape>  Generalized Extreme Value distribution.
+
+   fb_key                     ETC key-size distribution from [1].
+   fb_value                   ETC value-size distribution from [1].
+   fb_ia                      ETC inter-arrival distribution from [1].
+
+[1] Berk Atikoglu et al., Workload Analysis of a Large-Scale Key-Value Store,
+    SIGMETRICS 2012
+"
+

@@ -1,0 +1,10 @@
+*~
+*.[oda]
+.scon*
+config.log
+gmon.out
+mutilate
+cmdline.cc
+cmdline.h
+gtest
+config.h
