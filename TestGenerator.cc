@@ -55,6 +55,12 @@ int main(int argc, char **argv) {
   KeyGenerator kg(g);
   */
 
+  Generator *g = createFacebookValue();
+  //  Generator *g = createGenerator("pareto:15,214.476,0.348238");
+  for (int i = 0; i < 1000000; i++)
+    printf("%f\n", g->generate());
+
+  /*
   Generator *p2 = createGenerator("p:214.476,0.348238");
   //  for (int i = 0; i < 1000; i++)
   //    printf("%f\n", p2->generate());
@@ -62,6 +68,7 @@ int main(int argc, char **argv) {
   p2->set_lambda(1000);
   for (int i = 0; i < 1000; i++)
     printf("%f\n", p2->generate());
+  */
 
   //  for (int i = 0; i < 10000; i++)
   //    printf("%s\n", kg.generate(i).c_str());

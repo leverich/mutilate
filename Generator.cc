@@ -7,7 +7,7 @@
 Generator* createFacebookKey() { return new GEV(30.7984, 8.20449, 0.078688); }
 
 Generator* createFacebookValue() {
-  Generator* g = new GPareto(214.476, 0.348238);
+  Generator* g = new GPareto(15.0, 214.476, 0.348238);
 
   Discrete* d = new Discrete(g);
   d->add(0.00536, 0.0);
@@ -29,7 +29,7 @@ Generator* createFacebookValue() {
   return d;
 }
 
-Generator* createFacebookIA() { return new GPareto(16.0292, 0.154971); }
+Generator* createFacebookIA() { return new GPareto(0, 16.0292, 0.154971); }
 
 Generator* createGenerator(std::string str) {
   if (!strcmp(str.c_str(), "fb_key")) return createFacebookKey();
@@ -68,7 +68,7 @@ Generator* createGenerator(std::string str) {
   if      (strcasestr(str.c_str(), "fixed")) return new Fixed(a1);
   else if (strcasestr(str.c_str(), "normal")) return new Normal(a1, a2);
   else if (strcasestr(str.c_str(), "exponential")) return new Exponential(a1);
-  else if (strcasestr(str.c_str(), "pareto")) return new GPareto(a1, a2);
+  else if (strcasestr(str.c_str(), "pareto")) return new GPareto(a1, a2, a3);
   else if (strcasestr(str.c_str(), "gev")) return new GEV(a1, a2, a3);
   else if (strcasestr(str.c_str(), "uniform")) return new Uniform(a1);
 

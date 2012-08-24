@@ -12,7 +12,7 @@ text "\nBasic options:"
 
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
-option "qps" q "Target aggregate QPS." int default="0"
+option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 
 option "keysize" K "Length of memcached keys (distribution)."
@@ -34,8 +34,9 @@ option "depth" d "Maximum depth to pipeline requests." int default="1"
 option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
 By default, each thread connects to every server."
 
-option "iadist" i "Inter-arrival distribution (distribution)."
-       string default="exponential"
+option "iadist" i "Inter-arrival distribution (distribution).  Note: \
+The distribution will automatically be adjusted to match the QPS given \
+by --qps." string default="exponential"
 
 option "noload" - "Skip database loading."
 option "loadonly" - "Load database and then exit."
@@ -62,16 +63,19 @@ Some options take a 'distribution' as an argument.
 Distributions are specified by <distribution>[:<param1>[,...]].
 Parameters are not required.  The following distributions are supported:
 
-   [fixed:]<value>            Always generates <value>.
-   uniform:<max>              Uniform distribution between 0 and <max>.
-   normal:<mean>,<sd>         Normal distribution.
-   exponential:<lambda>       Exponential distribution.
-   pareto:<scale>,<shape>     Generalized Pareto distribution.
-   gev:<loc>,<scale>,<shape>  Generalized Extreme Value distribution.
+   [fixed:]<value>              Always generates <value>.
+   uniform:<max>                Uniform distribution between 0 and <max>.
+   normal:<mean>,<sd>           Normal distribution.
+   exponential:<lambda>         Exponential distribution.
+   pareto:<loc>,<scale>,<shape> Generalized Pareto distribution.
+   gev:<loc>,<scale>,<shape>    Generalized Extreme Value distribution.
 
-   fb_key                     ETC key-size distribution from [1].
-   fb_value                   ETC value-size distribution from [1].
-   fb_ia                      ETC inter-arrival distribution from [1].
+   To recreate the Facebook \"ETC\" request stream from [1], the
+   following hard-coded distributions are also provided:
+
+   fb_value   = a hard-coded discrete and GPareto PDF of value sizes
+   fb_key     = \"gev:30.7984,8.20449,0.078688\", key-size distribution
+   fb_ia      = \"pareto:0.0,16.0292,0.154971\", inter-arrival time dist.
 
 [1] Berk Atikoglu et al., Workload Analysis of a Large-Scale Key-Value Store,
     SIGMETRICS 2012

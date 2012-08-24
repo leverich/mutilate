@@ -121,23 +121,24 @@ private:
 
 class GPareto : public Generator {
 public:
-  GPareto(double _scale = 1.0, double _shape = 1.0) :
-    scale(_scale), shape(_shape) {
+  GPareto(double _loc = 0.0, double _scale = 1.0, double _shape = 1.0) :
+    loc(_loc), scale(_scale), shape(_shape) {
     assert(shape != 0.0);
-    D("GPareto(scale=%f, shape=%f)", scale, shape);
+    D("GPareto(loc=%f, scale=%f, shape=%f)", loc, scale, shape);
   }
 
   virtual double generate(double U = -1.0) {
     if (U < 0.0) U = drand48();
-    return scale * (pow(U, -shape) - 1) / shape;
+    return loc + scale * (pow(U, -shape) - 1) / shape;
   }
 
   virtual void set_lambda(double lambda) {
     if (lambda <= 0.0) scale = 0.0;
-    else scale = (1 - shape) / lambda;
+    else scale = (1 - shape) / lambda - (1 - shape) * loc;
   }
 
 private:
+  double loc /* mu */;
   double scale /* sigma */, shape /* k */;
 };
 
@@ -177,7 +178,6 @@ public:
     }
 
     return def->generate(Uc);
-    //    return 0.0;
   }
 
   void add(double p, double v) {
