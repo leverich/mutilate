@@ -5,7 +5,8 @@ env = Environment(ENV = os.environ)
 
 env['HAVE_POSIX_BARRIER'] = True
 
-env.Append(CPPPATH = ['/usr/local/include'])
+env.Append(CPPPATH = ['/usr/local/include', '/opt/local/include'])
+env.Append(LIBPATH = ['/opt/local/lib'])
 env.Append(CCFLAGS   = '-std=c++0x -D_GNU_SOURCE') # -D__STDC_FORMAT_MACROS')
 
 conf = env.Configure(config_h = "config.h")
@@ -14,7 +15,7 @@ if not conf.CheckCXX():
     print "A compiler with C++11 support is required."
     Exit(1)
 print "Checking for gengetopt...",
-if Execute("@which gengetopt &> /dev/null"):
+if env.Execute("@which gengetopt &> /dev/null"):
     print "not found (required)"
     Exit(1)
 else: print "found"
@@ -27,7 +28,7 @@ if not conf.CheckLibWithHeader("pthread", "pthread.h", "C++"):
 conf.CheckLib("rt", "clock_gettime", language="C++")
 conf.CheckLibWithHeader("zmq", "zmq.hpp", "C++")
 conf.CheckFunc('clock_gettime')
-if conf.CheckFunc('pthread_barrier_init'):
+if not conf.CheckFunc('pthread_barrier_init'):
     conf.env['HAVE_POSIX_BARRIER'] = False
 
 env = conf.Finish()
