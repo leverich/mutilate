@@ -8,8 +8,10 @@
 
 #ifdef USE_ADAPTIVE_SAMPLER
 #include "AdaptiveSampler.h"
-#else
+#elif defined(USE_HISTOGRAM_SAMPLER)
 #include "HistogramSampler.h"
+#else
+#include "LogHistogramSampler.h"
 #endif
 #include "AgentStats.h"
 #include "Operation.h"
@@ -21,8 +23,10 @@ class ConnectionStats {
  ConnectionStats(bool _sampling = true) :
 #ifdef USE_ADAPTIVE_SAMPLER
    get_sampler(100000), set_sampler(100000), op_sampler(100000),
-#else
+#elif defined(USE_HISTOGRAM_SAMPLER)
    get_sampler(10000,1), set_sampler(10000,1), op_sampler(1000,1),
+#else
+   get_sampler(200), set_sampler(200), op_sampler(100),
 #endif
    rx_bytes(0), tx_bytes(0), gets(0), sets(0),
    get_misses(0), sampling(_sampling) {}
@@ -31,10 +35,14 @@ class ConnectionStats {
   AdaptiveSampler<Operation> get_sampler;
   AdaptiveSampler<Operation> set_sampler;
   AdaptiveSampler<double> op_sampler;
-#else
+#elif defined(USE_HISTOGRAM_SAMPLER)
   HistogramSampler get_sampler;
   HistogramSampler set_sampler;
   HistogramSampler op_sampler;
+#else
+  LogHistogramSampler get_sampler;
+  LogHistogramSampler set_sampler;
+  LogHistogramSampler op_sampler;
 #endif
 
   uint64_t rx_bytes, tx_bytes;
@@ -160,8 +168,26 @@ class ConnectionStats {
            );
     if (newline) printf("\n");
   }
-#else
+#elif defined(USE_HISTOGRAM_SAMPLER)
   void print_stats(const char *tag, HistogramSampler &sampler,
+                   bool newline = true) {
+    if (sampler.total() == 0) {
+      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      if (newline) printf("\n");
+      return;
+    }
+
+    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+           tag, sampler.average(),
+           sampler.get_nth(0), sampler.get_nth(1), sampler.get_nth(5),
+           sampler.get_nth(10), sampler.get_nth(90),
+           sampler.get_nth(95), sampler.get_nth(99));
+
+    if (newline) printf("\n");
+  }
+#else
+  void print_stats(const char *tag, LogHistogramSampler &sampler,
                    bool newline = true) {
     if (sampler.total() == 0) {
       printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
