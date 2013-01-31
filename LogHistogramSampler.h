@@ -2,9 +2,10 @@
 #ifndef LOGHISTOGRAMSAMPLER_H
 #define LOGHISTOGRAMSAMPLER_H
 
-#include <inttypes.h>
-
 #include <assert.h>
+#include <inttypes.h>
+#include <math.h>
+
 #include <vector>
 
 #include "Operation.h"
@@ -53,6 +54,7 @@ public:
   double minimum() {
     for (size_t i = 0; i < bins.size(); i++)
       if (bins[i] > 0) return pow(_POW, (double) i + 0.5);
+    DIE("Not implemented");
   }
 
   double get_nth(double nth) {

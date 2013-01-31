@@ -511,7 +511,11 @@ void go(const vector<string>& servers, options_t& options,
   if (options.threads > 1) {
     pthread_t pt[options.threads];
     struct thread_data td[options.threads];
+#ifdef __clang__
+    vector<string>* ts = static_cast<vector<string>*>(alloca(sizeof(vector<string>) * options.threads));
+#else
     vector<string> ts[options.threads];
+#endif
 
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
