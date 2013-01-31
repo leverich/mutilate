@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import os
+import sys
 
 env = Environment(ENV = os.environ)
 
@@ -7,7 +8,10 @@ env['HAVE_POSIX_BARRIER'] = True
 
 env.Append(CPPPATH = ['/usr/local/include', '/opt/local/include'])
 env.Append(LIBPATH = ['/opt/local/lib'])
-env.Append(CCFLAGS   = '-std=c++0x -D_GNU_SOURCE') # -D__STDC_FORMAT_MACROS')
+env.Append(CCFLAGS = '-std=c++0x -D_GNU_SOURCE') # -D__STDC_FORMAT_MACROS')
+if sys.platform == 'darwin':
+    env['CC']  = 'clang'
+    env['CXX'] = 'clang++'
 
 conf = env.Configure(config_h = "config.h")
 conf.Define("__STDC_FORMAT_MACROS")
