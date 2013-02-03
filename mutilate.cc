@@ -365,7 +365,7 @@ int main(int argc, char **argv) {
     I("Search-mode.  Find QPS @ %dus %dth percentile.", x, n);
 
     int high_qps = 2000000;
-    int low_qps = 5000;
+    int low_qps = 1; // 5000;
     double nth;
     int cur_qps;
 
@@ -379,8 +379,8 @@ int main(int argc, char **argv) {
     I("peak qps = %d", high_qps);
 
     if (nth > x) {
-
-    while ((high_qps > low_qps * 1.02) && cur_qps > 10000) {
+      //    while ((high_qps > low_qps * 1.02) && cur_qps > 10000) {
+    while ((high_qps > low_qps * 1.02) && cur_qps > (peak_qps * .1)) {
       cur_qps = (high_qps + low_qps) / 2;
 
       args_to_options(&options);
@@ -400,7 +400,9 @@ int main(int argc, char **argv) {
       else low_qps = cur_qps;
     }
 
-    while (nth > x && cur_qps > 10000) { // > low_qps) { // 10000) {
+    //    while (nth > x && cur_qps > 10000) { // > low_qps) { // 10000) {
+      //    while (nth > x && cur_qps > 10000 && cur_qps > (low_qps * 0.90)) {
+    while (nth > x && cur_qps > (peak_qps * .1) && cur_qps > (low_qps * 0.90)) {
       cur_qps = cur_qps * 98 / 100;
 
       args_to_options(&options);
