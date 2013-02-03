@@ -11,6 +11,7 @@
 // under-represented).
 
 #include <assert.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
