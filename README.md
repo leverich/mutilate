@@ -78,6 +78,9 @@ Command-line Options
     Basic options:
       -s, --server=STRING      Memcached server hostname[:port].  Repeat to specify
                                  multiple servers.
+      -U, --username=STRING    Username to use for SASL authentication.
+      -P, --password=STRING    Password to use for SASL authentication.
+      -b, --binary             Use binary protocol.
       -q, --qps=INT            Target aggregate QPS. 0 = peak QPS.  (default=`0')
       -t, --time=INT           Maximum time to run (seconds).  (default=`5')
       -K, --keysize=STRING     Length of memcached keys (distribution).

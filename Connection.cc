@@ -10,6 +10,7 @@
 #include "config.h"
 
 #include "Connection.h"
+#include "ConnectionBinary.h"
 #include "distributions.h"
 #include "Generator.h"
 #include "mutilate.h"
@@ -18,8 +19,17 @@
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
                        bool sampling) :
-  hostname(_hostname), port(_port), start_time(0),
-  stats(sampling), options(_options), base(_base), evdns(_evdns)
+  Connection(_base, _evdns, _hostname, _port, "", "", _options, sampling)
+{
+  username_given = false;
+}
+
+Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
+                       string _hostname, string _port, string _username,
+                       string _password, options_t _options,
+                       bool sampling) :
+  hostname(_hostname), port(_port), username(_username), password(_password),
+  start_time(0), stats(sampling), options(_options), base(_base), evdns(_evdns)
 {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
@@ -35,6 +45,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   read_state = INIT_READ;
   write_state = INIT_WRITE;
+  username_given = true;
 
   bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
@@ -69,63 +80,6 @@ void Connection::reset() {
   read_state = IDLE;
   write_state = INIT_WRITE;
   stats = ConnectionStats(stats.sampling);
-}
-
-void Connection::issue_get(const char* key, double now) {
-  Operation op;
-
-#if HAVE_CLOCK_GETTIME
-  op.start_time = get_time_accurate();
-#else
-  if (now == 0.0) {
-#if USE_CACHED_TIME
-    struct timeval now_tv;
-    event_base_gettimeofday_cached(base, &now_tv);
-
-    op.start_time = tv_to_double(&now_tv);
-#else
-    op.start_time = get_time();
-#endif
-  } else {
-    op.start_time = now;
-  }
-#endif
-
-  op.type = Operation::GET;
-  op.key = string(key);
-
-  op_queue.push(op);
-
-  if (read_state == IDLE)
-    read_state = WAITING_FOR_GET;
-
-  int l = evbuffer_add_printf(bufferevent_get_output(bev), "get %s\r\n", key);
-  if (read_state != LOADING) stats.tx_bytes += l;
-}
-
-void Connection::issue_set(const char* key, const char* value, int length,
-                           double now) {
-  Operation op;
-
-#if HAVE_CLOCK_GETTIME
-  op.start_time = get_time_accurate();
-#else
-  if (now == 0.0) op.start_time = get_time();
-  else op.start_time = now;
-#endif
-
-  op.type = Operation::SET;
-  op_queue.push(op);
-
-  if (read_state == IDLE)
-    read_state = WAITING_FOR_SET;
-
-  int l = evbuffer_add_printf(bufferevent_get_output(bev),
-                              "set %s 0 0 %d\r\n", key, length);
-  l += bufferevent_write(bev, value, length);
-  l += bufferevent_write(bev, "\r\n", 2);
-
-  if (read_state != LOADING) stats.tx_bytes += l;
 }
 
 void Connection::issue_something(double now) {
@@ -264,7 +218,11 @@ void Connection::event_callback(short events) {
         DIE("setsockopt()");
     }
 
-    read_state = IDLE;  // This is the most important part!
+    if (!username_given) {
+      read_state = IDLE;  // This is the most important part!
+    } else {
+      issue_sasl();
+    }
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev);
     if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
@@ -272,179 +230,6 @@ void Connection::event_callback(short events) {
     DIE("BEV_EVENT_ERROR: %s", strerror(errno));
   } else if (events & BEV_EVENT_EOF) {
     DIE("Unexpected EOF from server.");
-  }
-}
-
-void Connection::read_callback() {
-  struct evbuffer *input = bufferevent_get_input(bev);
-#if USE_CACHED_TIME
-  struct timeval now_tv;
-  event_base_gettimeofday_cached(base, &now_tv);
-#endif
-
-  char *buf;
-  Operation *op = NULL;
-  int length;
-  size_t n_read_out;
-
-  double now;
-
-  // Protocol processing loop.
-
-  if (op_queue.size() == 0) V("Spurious read callback.");
-
-  while (1) {
-    if (op_queue.size() > 0) op = &op_queue.front();
-
-    switch (read_state) {
-    case INIT_READ: DIE("event from uninitialized connection");
-    case IDLE: return;  // We munched all the data we expected?
-
-    case WAITING_FOR_GET:
-      assert(op_queue.size() > 0);
-
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return;  // A whole line not received yet. Punt.
-
-      stats.rx_bytes += n_read_out; // strlen(buf);
-
-      if (!strcmp(buf, "END")) {
-        //        D("GET (%s) miss.", op->key.c_str());
-        stats.get_misses++;
-
-#if USE_CACHED_TIME
-        now = tv_to_double(&now_tv);
-#else
-        now = get_time();
-#endif
-#if HAVE_CLOCK_GETTIME
-        op->end_time = get_time_accurate();
-#else
-        op->end_time = now;
-#endif
-
-        stats.log_get(*op);
-
-        free(buf);
-
-        pop_op();
-        drive_write_machine();
-        break;
-      } else if (!strncmp(buf, "VALUE", 5)) {
-        sscanf(buf, "VALUE %*s %*d %d", &length);
-
-        // FIXME: check key name to see if it corresponds to the op at
-        // the head of the op queue?  This will be necessary to
-        // support "gets" where there may be misses.
-
-        data_length = length;
-        read_state = WAITING_FOR_GET_DATA;
-      }
-
-      free(buf);
-
-    case WAITING_FOR_GET_DATA:
-      assert(op_queue.size() > 0);
-
-      length = evbuffer_get_length(input);
-
-      if (length >= data_length + 2) {
-        // FIXME: Actually parse the value?  Right now we just drain it.
-        evbuffer_drain(input, data_length + 2);
-        read_state = WAITING_FOR_END;
-
-        stats.rx_bytes += data_length + 2;
-      } else {
-        return;
-      }
-    case WAITING_FOR_END:
-      assert(op_queue.size() > 0);
-
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return; // Haven't received a whole line yet. Punt.
-
-      stats.rx_bytes += n_read_out;
-
-      if (!strcmp(buf, "END")) {
-#if USE_CACHED_TIME
-        now = tv_to_double(&now_tv);
-#else
-        now = get_time();
-#endif
-#if HAVE_CLOCK_GETTIME
-        op->end_time = get_time_accurate();
-#else
-        op->end_time = now;
-#endif
-
-        stats.log_get(*op);
-
-        free(buf);
-
-        pop_op();
-        drive_write_machine(now);
-        break;
-      } else {
-        DIE("Unexpected result when waiting for END");
-      }
-
-    case WAITING_FOR_SET:
-      assert(op_queue.size() > 0);
-
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return; // Haven't received a whole line yet. Punt.
-
-      stats.rx_bytes += n_read_out;
-
-      now = get_time();
-
-#if HAVE_CLOCK_GETTIME
-      op->end_time = get_time_accurate();
-#else
-      op->end_time = now;
-#endif
-
-      stats.log_set(*op);
-
-      free(buf);
-
-      pop_op();
-      drive_write_machine(now);
-      break;
-
-    case LOADING:
-      assert(op_queue.size() > 0);
-
-      buf = evbuffer_readln(input, NULL, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return; // Haven't received a whole line yet.
-      free(buf);
-
-      loader_completed++;
-      pop_op();
-
-      if (loader_completed == options.records) {
-        D("Finished loading.");
-        read_state = IDLE;
-      } else {
-        while (loader_issued < loader_completed + LOADER_CHUNK) {
-          if (loader_issued >= options.records) break;
-
-          char key[256];
-          string keystr = keygen->generate(loader_issued);
-          strcpy(key, keystr.c_str());
-          int index = lrand48() % (1024 * 1024);
-          //          generate_key(loader_issued, options.keysize, key);
-          //          issue_set(key, &random_char[index], options.valuesize);
-          issue_set(key, &random_char[index], valuesize->generate());
-
-          loader_issued++;
-        }
-      }
-
-      break;
-
-    default: DIE("not implemented");
-    }
   }
 }
 
@@ -494,3 +279,17 @@ void Connection::start_loading() {
     loader_issued++;
   }
 }
+
+void Connection::issue_sasl() {
+  read_state = SASL;
+
+  ConnectionBinary::binary_header_t header = {0x80, 0x21, 0, 0, 0, 0, 0, 0, 0};
+  header.key_len = htons(5);
+  header.body_len = htonl(6 + username.length() + 1 + password.length());
+
+  bufferevent_write(bev, &header, 24);
+  bufferevent_write(bev, "PLAIN\0", 6);
+  bufferevent_write(bev, username.c_str(), username.length() + 1);
+  bufferevent_write(bev, password.c_str(), password.length());
+}
+
