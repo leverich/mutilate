@@ -629,6 +629,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     for (int c = 0; c < options.connections; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                        args.binary_given,
                                         args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);

@@ -27,7 +27,7 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             bool sampling = true);
+             bool useBinary, bool sampling = true);
   ~Connection();
 
   string hostname;
@@ -59,8 +59,8 @@ public:
 
   ConnectionStats stats;
 
-  void issue_get(const char* key, double now = 0.0);
-  void issue_set(const char* key, const char* value, int length,
+  void issue_get(const char* key, uint16_t keylen, double now = 0.0);
+  void issue_set(const char* key, uint16_t keylen, const char* value, int length,
                  double now = 0.0);
   void issue_something(double now = 0.0);
   void pop_op();
@@ -75,6 +75,7 @@ public:
   void read_callback();
   void write_callback();
   void timer_callback();
+  bool consume_binary_response(evbuffer *input);
 
   void set_priority(int pri);
 
@@ -99,4 +100,12 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
+
+  // Pisces specific
+  bool useBinary;
+
+  //TODO(syang0) give meaning to SASL fields!
+  bool useSASL;
+  const char* username;
+  const char* password;
 };
