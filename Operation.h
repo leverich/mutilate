@@ -11,7 +11,7 @@ public:
   double start_time, end_time;
 
   enum type_enum {
-    GET, SET
+    GET, SET, SASL
   };
 
   type_enum type;

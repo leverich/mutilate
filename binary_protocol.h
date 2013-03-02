@@ -8,8 +8,12 @@
 #ifndef BINARY_PROTOCOL_H
 #define	BINARY_PROTOCOL_H
 
-#define CMD_GET 0x00
-#define CMD_SET 0x01
+#define CMD_GET  0x00
+#define CMD_SET  0x01
+#define CMD_SASL 0x21
+
+#define RESP_OK 0x00
+#define RESP_SASL_ERR 0x20
 
 typedef struct __attribute__ ((__packed__)) {
   uint8_t magic;

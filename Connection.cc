@@ -73,6 +73,29 @@ void Connection::reset() {
   stats = ConnectionStats(stats.sampling);
 }
 
+
+void Connection::doPlaintextSASL(string username, string password) {
+  // each line is 4 bytes
+  binary_header h = { 0x80, CMD_SASL, htons(0x05),
+                      0x00, 0x00, 0x00,
+                      htonl(5 + 1 + username.length() + 1 + password.length())
+                    };
+  Operation op;
+
+  // This is only done once, so efficiency is not as important.
+  bufferevent_write(bev, &h, 24);
+  bufferevent_write(bev, "PLAIN", 5);
+  bufferevent_write(bev, "\0"   , 1);
+  bufferevent_write(bev, username.c_str(), username.length());
+  bufferevent_write(bev, "\0"   , 1);
+  bufferevent_write(bev, password.c_str(), password.length());
+
+  // Don't care about key nor time
+  op.type = Operation::SASL;
+  op_queue.push(op);
+  read_state = WAITING_FOR_SASL;
+}
+
 void Connection::issue_get(const char* key, uint16_t keylen, double now) {
   Operation op;
   binary_header h;
@@ -507,6 +530,12 @@ void Connection::read_callback() {
 
       break;
 
+    case WAITING_FOR_SASL:
+      assert(op_queue.size() > 0);
+      if (!consume_binary_response(input)) return;
+      pop_op();
+      break;
+
     default: DIE("not implemented");
     }
   }
@@ -535,6 +564,15 @@ bool Connection::consume_binary_response(evbuffer *input) {
   // if something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       stats.get_misses++;
+  }
+
+  #define unlikely(x)     __builtin_expect((x),0)
+  if (unlikely(h->opcode == CMD_SASL)) {
+    if (h->status == RESP_OK) {
+      V("SASL authentication succeeded");
+    } else {
+      DIE("SASL authentication failed");
+    }
   }
 
   evbuffer_drain(input, targetLen);

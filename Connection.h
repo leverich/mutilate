@@ -39,6 +39,7 @@ public:
     INIT_READ,
     LOADING,
     IDLE,
+    WAITING_FOR_SASL,
     WAITING_FOR_GET,
     WAITING_FOR_GET_DATA,
     WAITING_FOR_END,
@@ -70,6 +71,7 @@ public:
   void start_loading();
 
   void reset();
+  void doPlaintextSASL(string username, string password);
 
   void event_callback(short events);
   void read_callback();
@@ -101,11 +103,5 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
 
-  // Pisces specific
   bool useBinary;
-
-  //TODO(syang0) give meaning to SASL fields!
-  bool useSASL;
-  const char* username;
-  const char* password;
 };
