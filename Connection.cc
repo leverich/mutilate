@@ -78,8 +78,7 @@ void Connection::doPlaintextSASL(string username, string password) {
   // each line is 4 bytes
   binary_header h = { 0x80, CMD_SASL, htons(0x05),
                       0x00, 0x00, 0x00,
-                      htonl(5 + 1 + username.length() + 1 + password.length())
-                    };
+                      htonl(5 + 1 + username.length() + 1 + password.length())};
   Operation op;
 
   // This is only done once, so efficiency is not as important.
@@ -98,7 +97,6 @@ void Connection::doPlaintextSASL(string username, string password) {
 
 void Connection::issue_get(const char* key, uint16_t keylen, double now) {
   Operation op;
-  binary_header h;
   int l;
 
 #if HAVE_CLOCK_GETTIME
@@ -128,9 +126,9 @@ void Connection::issue_get(const char* key, uint16_t keylen, double now) {
 
   if (useBinary) {
     // each line is 4-bytes
-    h = {0x80, CMD_GET, htons(keylen),
-         0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
-         htonl(keylen) };
+    binary_header h = {0x80, CMD_GET, htons(keylen),
+                       0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                       htonl(keylen) };
 
     l = bufferevent_write(bev, &h, 24); // size does not include extras
     l += bufferevent_write(bev, key, keylen);
@@ -145,7 +143,6 @@ void Connection::issue_set(const char* key, uint16_t keylen,
                            const char* value, int length,
                            double now) {
   Operation op;
-  binary_header h;
   int l;
 
 #if HAVE_CLOCK_GETTIME
@@ -163,9 +160,9 @@ void Connection::issue_set(const char* key, uint16_t keylen,
 
   if (useBinary) {
     // each line is 4-bytes
-    h = { 0x80, CMD_SET, htons(keylen),
-          0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
-          htonl(keylen + 8 + length)};
+    binary_header h = { 0x80, CMD_SET, htons(keylen),
+                        0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                        htonl(keylen + 8 + length)};
 
     bufferevent_write(bev, &h, 32); // With extras
     bufferevent_write(bev, key, keylen);
