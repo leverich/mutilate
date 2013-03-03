@@ -12,6 +12,10 @@ text "\nBasic options:"
 
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
+option "username" U "Username to use for SASL authentication." string
+option "password" P "Password to use for SASL authentication." string
+option "binary" b "Use binary protocol."
+
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 

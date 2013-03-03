@@ -32,7 +32,8 @@
 #include "barrier.h"
 #endif
 #include "cmdline.h"
-#include "Connection.h"
+#include "ConnectionAscii.h"
+#include "ConnectionBinary.h"
 #include "ConnectionOptions.h"
 #include "log.h"
 #include "mutilate.h"
@@ -628,9 +629,28 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     delete[] s_copy;
 
     for (int c = 0; c < options.connections; c++) {
-      Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                        args.agentmode_given ? false :
-                                        true);
+      Connection* conn;
+      if (!args.binary_given) {
+        if (args.username_given) {
+          conn = new ConnectionAscii(base, evdns, hostname, port,
+                                     args.username_arg, args.password_arg,
+                                     options,
+                                     args.agentmode_given ? false : true);
+        } else {
+          conn = new ConnectionAscii(base, evdns, hostname, port, options,
+                                     args.agentmode_given ? false : true);
+        }
+      } else {
+        if (args.username_given) {
+          conn = new ConnectionBinary(base, evdns, hostname, port,
+                                      args.username_arg, args.password_arg,
+                                      options,
+                                      args.agentmode_given ? false : true);
+        } else {
+          conn = new ConnectionBinary(base, evdns, hostname, port, options,
+                                      args.agentmode_given ? false : true);
+        }
+      }
       connections.push_back(conn);
       if (c == 0) server_lead.push_back(conn);
     }

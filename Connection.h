@@ -1,5 +1,8 @@
 // -*- c++-mode -*-
 
+#ifndef CONNECTION_H
+#define CONNECTION_H
+
 #include <queue>
 #include <string>
 
@@ -28,15 +31,22 @@ public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
              bool sampling = true);
-  ~Connection();
+
+  Connection(struct event_base* _base, struct evdns_base* _evdns,
+             string _hostname, string _port, string _username,
+             string _password, options_t options, bool sampling = true);
+  virtual ~Connection();
 
   string hostname;
   string port;
+  string username;
+  string password;
 
   double start_time;  // Time when this connection began operations.
 
   enum read_state_enum {
     INIT_READ,
+    SASL,
     LOADING,
     IDLE,
     WAITING_FOR_GET,
@@ -59,9 +69,9 @@ public:
 
   ConnectionStats stats;
 
-  void issue_get(const char* key, double now = 0.0);
-  void issue_set(const char* key, const char* value, int length,
-                 double now = 0.0);
+  virtual void issue_get(const char* key, double now = 0.0) = 0;
+  virtual void issue_set(const char* key, const char* value, int length,
+                         double now = 0.0) = 0;
   void issue_something(double now = 0.0);
   void pop_op();
   bool check_exit_condition(double now = 0.0);
@@ -72,7 +82,7 @@ public:
   void reset();
 
   void event_callback(short events);
-  void read_callback();
+  virtual void read_callback() = 0;
   void write_callback();
   void timer_callback();
 
@@ -82,10 +92,12 @@ public:
 
   std::queue<Operation> op_queue;
 
-private:
+protected:
   struct event_base *base;
   struct evdns_base *evdns;
   struct bufferevent *bev;
+
+  bool username_given;
 
   struct event *timer;  // Used to control inter-transmission time.
   double lambda, next_time; // Inter-transmission time parameters.
@@ -99,4 +111,11 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
+
+  void issue_sasl();
+
+private:
+  void startup();
 };
+
+#endif // CONNECTION_H
