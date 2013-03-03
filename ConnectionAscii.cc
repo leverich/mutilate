@@ -66,10 +66,10 @@ void ConnectionAscii::issue_set(const char* key, const char* value, int length,
 
   int l = evbuffer_add_printf(bufferevent_get_output(bev),
                               "set %s 0 0 %d\r\n", key, length);
-  l += bufferevent_write(bev, value, length);
-  l += bufferevent_write(bev, "\r\n", 2);
+  bufferevent_write(bev, value, length);
+  bufferevent_write(bev, "\r\n", 2);
 
-  if (read_state != LOADING) stats.tx_bytes += l;
+  if (read_state != LOADING) stats.tx_bytes += l + length + 2;
 }
 
 void ConnectionAscii::read_callback() {
