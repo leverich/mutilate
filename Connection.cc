@@ -19,9 +19,11 @@
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
                        bool sampling) :
-  Connection(_base, _evdns, _hostname, _port, "", "", _options, sampling)
+  hostname(_hostname), port(_port), username(""), password(""),
+  start_time(0), stats(sampling), options(_options), base(_base), evdns(_evdns)
 {
   username_given = false;
+  startup();
 }
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
@@ -31,6 +33,11 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   hostname(_hostname), port(_port), username(_username), password(_password),
   start_time(0), stats(sampling), options(_options), base(_base), evdns(_evdns)
 {
+  username_given = true;
+  startup();
+}
+
+void Connection::startup() {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
   keygen = new KeyGenerator(keysize, options.records);
@@ -45,7 +52,6 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   read_state = INIT_READ;
   write_state = INIT_WRITE;
-  username_given = true;
 
   bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);

@@ -113,6 +113,9 @@ protected:
   Generator *iagen;
 
   void issue_sasl();
+
+private:
+  void startup();
 };
 
 #endif // CONNECTION_H
