@@ -38,6 +38,11 @@ public:
     uint64_t version;
   } binary_header_t;
 
+  typedef struct {
+    binary_header_t h;
+    uint64_t extras;
+  } binary_header_extras_t;
+
   void issue_get(const char* key, double now = 0.0);
   void issue_set(const char* key, const char* value, int length,
                  double now = 0.0);

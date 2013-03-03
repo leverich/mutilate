@@ -73,17 +73,16 @@ void ConnectionBinary::issue_set(const char* key, const char* value,
 
   uint32_t kl = strlen(key);
   uint32_t bl = kl + 8 + (uint32_t) length;
-  binary_header_t header = {0x80, 1, 0, 8, 0, 0, 0, 0, 0};
-  header.key_len = htons(kl);
-  header.body_len = htonl(bl);
-  char extras[] = {0, 0, 0, 0, 0, 0, 0, 0};
+  binary_header_extras_t header = {0x80, 1, 0, 8, 0, 0, 0, 0, 0, 0};
+  header.h.key_len = htons(kl);
+  header.h.body_len = htonl(bl);
 
-  bufferevent_write(bev, &header, 24);
-  bufferevent_write(bev, extras, 8); // FIXME: can collapse this and above call
+  bufferevent_write(bev, &header, sizeof(binary_header_extras_t));
   bufferevent_write(bev, key, kl);
   bufferevent_write(bev, value, length);
 
-  if (read_state != LOADING) stats.tx_bytes += 32 + kl + length;
+  if (read_state != LOADING)
+    stats.tx_bytes += sizeof(binary_header_extras_t) + kl + length;
 }
 
 void ConnectionBinary::read_callback() {
