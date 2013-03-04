@@ -135,8 +135,7 @@ void Connection::issue_get(const char* key, double now) {
   if (read_state != LOADING) stats.tx_bytes += l;
 }
 
-void Connection::issue_set(const char* key,
-                           const char* value, int length,
+void Connection::issue_set(const char* key, const char* value, int length,
                            double now) {
   Operation op;
   int l;

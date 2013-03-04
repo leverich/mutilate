@@ -102,6 +102,4 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
-
-  bool useBinary;
 };
