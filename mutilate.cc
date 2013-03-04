@@ -376,7 +376,7 @@ int main(int argc, char **argv) {
     high_qps = stats.get_qps();
     cur_qps = stats.get_qps();
 
-    I("peak qps = %d", high_qps);
+    I("peak qps = %d, nth = %.1f", high_qps, nth);
 
     if (nth > x) {
       //    while ((high_qps > low_qps * 1.02) && cur_qps > 10000) {
