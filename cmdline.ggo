@@ -29,12 +29,14 @@ option "update" u "Ratio of set:get commands." float default="0.0"
 
 text "\nAdvanced options:"
 
+option "username" U "Username to use for SASL authentication." string
+option "password" P "Password to use for SASL authentication." string
 option "threads" T "Number of threads to spawn." int default="1"
 option "connections" c "Connections to establish per server." int default="1"
 option "depth" d "Maximum depth to pipeline requests." int default="1"
-option "sasl" - "Perform a binary SASL authentication (plaintext) before \
-issuing any requests. String format is user:pass (Note: this does NOT
-automatically set --binary)" string
+#option "sasl" - "Perform a binary SASL authentication (plaintext) before \
+#issuing any requests. String format is user:pass (Note: this does NOT
+#automatically set --binary)" string
 option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
 By default, each thread connects to every server."
 

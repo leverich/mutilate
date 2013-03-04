@@ -1,10 +1,3 @@
-/*
- * File:   binary_protocol.h
- * Author: syang0
- *
- * Created on March 1, 2013, 12:59 AM
- */
-
 #ifndef BINARY_PROTOCOL_H
 #define	BINARY_PROTOCOL_H
 
@@ -33,7 +26,6 @@ typedef struct __attribute__ ((__packed__)) {
 
   // Used for set only.
   uint64_t extras;
-} binary_header;
+} binary_header_t;
 
-#endif	/* BINARY_PROTOCOL_H */
-
+#endif /* BINARY_PROTOCOL_H */

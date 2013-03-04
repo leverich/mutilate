@@ -27,7 +27,7 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             bool useBinary, bool sampling = true);
+             bool sampling = true);
   ~Connection();
 
   string hostname;
@@ -60,8 +60,8 @@ public:
 
   ConnectionStats stats;
 
-  void issue_get(const char* key, uint16_t keylen, double now = 0.0);
-  void issue_set(const char* key, uint16_t keylen, const char* value, int length,
+  void issue_get(const char* key, double now = 0.0);
+  void issue_set(const char* key, const char* value, int length,
                  double now = 0.0);
   void issue_something(double now = 0.0);
   void pop_op();
@@ -71,7 +71,7 @@ public:
   void start_loading();
 
   void reset();
-  void doPlaintextSASL(string username, string password);
+  void issue_sasl();
 
   void event_callback(short events);
   void read_callback();

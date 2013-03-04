@@ -629,7 +629,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     for (int c = 0; c < options.connections; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                        args.binary_given || args.sasl_given,
                                         args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);
@@ -650,36 +649,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     if (restart) continue;
     else break;
-  }
-
-  // Do SASL and wait to complete
-  if(args.sasl_given) {
-    char *user, *pass;
-    saveptr = NULL;
-
-    user = strtok_r(args.sasl_arg, ":", &saveptr);
-    pass = strtok_r(NULL, ":", &saveptr);
-
-    if (user == NULL)
-      DIE("strtok(.., \":\") failed to parse %s", args.sasl_arg);
-
-    for (Connection *conn: connections) {
-      conn->doPlaintextSASL(user, (pass == NULL) ? "" : pass);
-    }
-
-    while (1) {
-      // FIXME: If all connections become ready before event_base_loop
-      // is called, this will deadlock.
-      event_base_loop(base, EVLOOP_ONCE);
-
-      bool restart = false;
-      for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
-          restart = true;
-
-      if (restart) continue;
-      else break;
-    }
   }
 
   // Load database on lead connection for each server.
@@ -898,6 +867,19 @@ void args_to_options(options_t* options) {
   //    options->records = args.records_arg;
   //  else
   options->records = args.records_arg / options->server_given;
+
+  options->binary = args.binary_given;
+  options->sasl = args.username_given;
+  
+  if (args.password_given)
+    strcpy(options->password, args.password_arg);
+  else
+    strcpy(options->password, "");
+
+  if (args.username_given)
+    strcpy(options->username, args.username_arg);
+  else
+    strcpy(options->username, "");
 
   D("options->records = %d", options->records);
 
