@@ -163,7 +163,7 @@ void agent() {
 }
 
 void prep_agent(const vector<string>& servers, options_t& options) {
-  int sum = options.lambda_denom;
+  int sum = args.measure_mode_given ? options.server_given * options.threads : options.lambda_denom;
 
   for (auto s: agent_sockets) {
     zmq::message_t message(sizeof(options_t));
@@ -627,7 +627,9 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     delete[] s_copy;
 
-    for (int c = 0; c < options.connections; c++) {
+    int conns = args.measure_mode_given ? 1 : options.connections;
+
+    for (int c = 0; c < conns; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
                                         args.agentmode_given ? false :
                                         true);

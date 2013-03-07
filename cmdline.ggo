@@ -34,9 +34,6 @@ option "password" P "Password to use for SASL authentication." string
 option "threads" T "Number of threads to spawn." int default="1"
 option "connections" c "Connections to establish per server." int default="1"
 option "depth" d "Maximum depth to pipeline requests." int default="1"
-#option "sasl" - "Perform a binary SASL authentication (plaintext) before \
-#issuing any requests. String format is user:pass (Note: this does NOT
-#automatically set --binary)" string
 option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
 By default, each thread connects to every server."
 
@@ -63,6 +60,7 @@ text "\nAgent-mode options:"
 option "agentmode" A "Run client in agent mode."
 option "agent" a "Enlist remote agent." string typestr="host" multiple
 option "lambda_mul" l "Lambda multiplier.  Increases share of QPS for this client." int default="1"
+option "measure_mode" M "Master client ignores --connections, only uses 1 connection per thread."
 
 text "
 Some options take a 'distribution' as an argument.
