@@ -31,6 +31,8 @@ text "\nAdvanced options:"
 
 option "username" U "Username to use for SASL authentication." string
 option "password" P "Password to use for SASL authentication." string
+option "membaseConfig" M "File location of the membase configuration \
+describing the bucket/tenant to be tested." string
 option "threads" T "Number of threads to spawn." int default="1"
 option "connections" c "Connections to establish per server." int default="1"
 option "depth" d "Maximum depth to pipeline requests." int default="1"

@@ -8,7 +8,8 @@ env['HAVE_POSIX_BARRIER'] = True
 
 env.Append(CPPPATH = ['/usr/local/include', '/opt/local/include'])
 env.Append(LIBPATH = ['/opt/local/lib'])
-env.Append(CCFLAGS = '-std=c++0x -D_GNU_SOURCE') # -D__STDC_FORMAT_MACROS')
+env.Append(CXXFLAGS = '-std=c++0x')
+env.Append(CCFLAGS = '-D_GNU_SOURCE') # -D__STDC_FORMAT_MACROS')
 if sys.platform == 'darwin':
     env['CC']  = 'clang'
     env['CXX'] = 'clang++'
@@ -29,6 +30,9 @@ if not conf.CheckLibWithHeader("event", "event2/event.h", "C++"):
 if not conf.CheckLibWithHeader("pthread", "pthread.h", "C++"):
     print "pthread required"
     Exit(1)
+if not conf.CheckLib("hashkit"):
+    print "hashkit needed by libvbucket"
+    Exit(1)
 conf.CheckLib("rt", "clock_gettime", language="C++")
 conf.CheckLibWithHeader("zmq", "zmq.hpp", "C++")
 conf.CheckFunc('clock_gettime')
@@ -37,14 +41,14 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O3 -Wall -g')
+env.Append(CFLAGS = ' -O3 -Wall -g -std=c99')
 #env.Append(CPPFLAGS  = ' -D_GNU_SOURCE -D__STDC_FORMAT_MACROS')
 #env.Append(CPPFLAGS = ' -DUSE_ADAPTIVE_SAMPLER')
 
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 
 src = Split("""mutilate.cc cmdline.cc log.cc distributions.cc util.cc
-               Connection.cc Generator.cc""")
+               Connection.cc Generator.cc vbucket.c cJSON.c""")
 
 if not env['HAVE_POSIX_BARRIER']: # USE_POSIX_BARRIER:
     src += ['barrier.cc']

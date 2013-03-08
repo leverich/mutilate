@@ -18,9 +18,9 @@
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
-                       bool sampling) :
+                       VBUCKET_CONFIG_HANDLE vb, bool sampling) :
   hostname(_hostname), port(_port), start_time(0),
-  stats(sampling), options(_options), base(_base), evdns(_evdns)
+  stats(sampling), options(_options), base(_base), evdns(_evdns), vb(vb)
 {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
@@ -48,6 +48,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   timer = evtimer_new(base, timer_cb, this);
 }
+
+
 
 Connection::~Connection() {
   event_free(timer);
@@ -121,8 +123,9 @@ void Connection::issue_get(const char* key, double now) {
 
   if (options.binary) {
     // each line is 4-bytes
+    uint16_t vbucket_id = vb ? vbucket_get_vbucket_by_key(vb, key, keylen) : 0;
     binary_header_t h = {0x80, CMD_GET, htons(keylen),
-                       0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                       0x00, 0x00, htons(vbucket_id),
                        htonl(keylen) };
 
     bufferevent_write(bev, &h, 24); // size does not include extras
@@ -156,8 +159,9 @@ void Connection::issue_set(const char* key, const char* value, int length,
 
   if (options.binary) {
     // each line is 4-bytes
+    uint16_t vbucket_id = vb ? vbucket_get_vbucket_by_key(vb, key, keylen) : 0;
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                        0x08, 0x00, htons(vbucket_id),
                         htonl(keylen + 8 + length)};
 
     bufferevent_write(bev, &h, 32); // With extras
@@ -557,7 +561,7 @@ bool Connection::consume_binary_response(evbuffer *input) {
   }
 
   // if something other than success, count it as a miss
-  if (h->opcode == CMD_GET && h->status) {
+  if (h->opcode == CMD_GET && h->status != RESP_OK) {
       stats.get_misses++;
   }
 

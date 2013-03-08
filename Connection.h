@@ -15,6 +15,7 @@
 #include "Generator.h"
 #include "Operation.h"
 #include "util.h"
+#include "vbucket.h"
 
 using namespace std;
 
@@ -27,7 +28,7 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             bool sampling = true);
+             VBUCKET_CONFIG_HANDLE vb, bool sampling = true);
   ~Connection();
 
   string hostname;
@@ -102,4 +103,6 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
+
+  VBUCKET_CONFIG_HANDLE vb;
 };

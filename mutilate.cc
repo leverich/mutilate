@@ -37,6 +37,7 @@
 #include "log.h"
 #include "mutilate.h"
 #include "util.h"
+#include "vbucket.h"
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -51,6 +52,7 @@ zmq::context_t context(1);
 #endif
 
 struct thread_data {
+  VBUCKET_CONFIG_HANDLE vb;
   const vector<string> *servers;
   options_t *options;
   bool master;
@@ -68,14 +70,15 @@ double boot_time;
 void init_random_stuff();
 
 void go(const vector<string> &servers, options_t &options,
-        ConnectionStats &stats
+        ConnectionStats &stats, VBUCKET_CONFIG_HANDLE vb
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
 );
 
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats, bool master = true
+                 ConnectionStats &stats,  VBUCKET_CONFIG_HANDLE vb,
+                 bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
@@ -142,7 +145,7 @@ void agent() {
 
     ConnectionStats stats;
 
-    go(servers, options, stats, &socket);
+    go(servers, options, stats, NULL, &socket);
 
     AgentStats as;
 
@@ -345,6 +348,25 @@ int main(int argc, char **argv) {
 
   pthread_barrier_init(&barrier, NULL, options.threads);
 
+  //TODO(syang0) this will be a URL later.
+  VBUCKET_CONFIG_HANDLE vb = NULL;
+  if (args.membaseConfig_given) {
+    vb = vbucket_config_parse_file(args.membaseConfig_arg);
+    if (vb == NULL)
+      DIE("vbucket error - %s", vbucket_get_error());
+
+    int numServers = vbucket_config_get_num_servers(vb);
+    if (numServers== 0)
+      DIE("vbucket error - no servers specified in config file");
+
+    int numvBuckets = vbucket_config_get_num_vbuckets(vb);
+    V("vBucket config file loaded from %s with %d servers and %d vBuckets",
+            args.membaseConfig_arg, numServers, numvBuckets);
+
+    // Toggle Binary stuff
+    options.binary = true;
+  }
+
   vector<string> servers;
   for (unsigned int s = 0; s < args.server_given; s++)
     servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
@@ -369,7 +391,7 @@ int main(int argc, char **argv) {
     double nth;
     int cur_qps;
 
-    go(servers, options, stats);
+    go(servers, options, stats, vb);
 
     nth = stats.get_nth(n);
     peak_qps = stats.get_qps();
@@ -390,7 +412,7 @@ int main(int argc, char **argv) {
 
       stats = ConnectionStats();
 
-      go(servers, options, stats);
+      go(servers, options, stats, vb);
 
       nth = stats.get_nth(n);
 
@@ -412,7 +434,7 @@ int main(int argc, char **argv) {
 
       stats = ConnectionStats();
 
-      go(servers, options, stats);
+      go(servers, options, stats, vb);
 
       nth = stats.get_nth(n);
 
@@ -447,14 +469,14 @@ int main(int argc, char **argv) {
 
       stats = ConnectionStats();
 
-      go(servers, options, stats);
+      go(servers, options, stats, vb);
 
       stats.print_stats("read", stats.get_sampler, false);
       printf(" %8.1f", stats.get_qps());
       printf(" %8d\n", q);
     }    
   } else {
-    go(servers, options, stats);
+    go(servers, options, stats, vb);
   }
 
   if (!args.scan_given && !args.loadonly_given) {
@@ -499,7 +521,7 @@ int main(int argc, char **argv) {
 }
 
 void go(const vector<string>& servers, options_t& options,
-        ConnectionStats &stats
+        ConnectionStats &stats, VBUCKET_CONFIG_HANDLE vb
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -521,6 +543,7 @@ void go(const vector<string>& servers, options_t& options,
 
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
+      td[t].vb = vb;
 #ifdef HAVE_LIBZMQ
       td[t].socket = socket;
 #endif
@@ -548,7 +571,7 @@ void go(const vector<string>& servers, options_t& options,
       delete cs;
     }
   } else if (options.threads == 1) {
-    do_mutilate(servers, options, stats, true
+    do_mutilate(servers, options, stats, vb, true
 #ifdef HAVE_LIBZMQ
 , socket
 #endif
@@ -574,7 +597,7 @@ void* thread_main(void *arg) {
 
   ConnectionStats *cs = new ConnectionStats();
 
-  do_mutilate(*td->servers, *td->options, *cs, td->master
+  do_mutilate(*td->servers, *td->options, *cs, td->vb, td->master
 #ifdef HAVE_LIBZMQ
 , td->socket
 #endif
@@ -584,7 +607,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, bool master
+                 ConnectionStats& stats, VBUCKET_CONFIG_HANDLE vb, bool master
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -628,7 +651,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     delete[] s_copy;
 
     for (int c = 0; c < options.connections; c++) {
-      Connection* conn = new Connection(base, evdns, hostname, port, options,
+      Connection* conn = new Connection(base, evdns, hostname, port, options, vb,
                                         args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);
