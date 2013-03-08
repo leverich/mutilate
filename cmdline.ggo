@@ -59,8 +59,25 @@ option "scan" - "Scan latency across QPS rates from min to max."
 text "\nAgent-mode options:"
 option "agentmode" A "Run client in agent mode."
 option "agent" a "Enlist remote agent." string typestr="host" multiple
-option "lambda_mul" l "Lambda multiplier.  Increases share of QPS for this client." int default="1"
-option "measure_mode" M "Master client ignores --connections, only uses 1 connection per thread."
+option "lambda_mul" l "Lambda multiplier.  Increases share of \
+QPS for this client." int default="1"
+option "measure_connections" C "Master client connections per server, \
+overrides --connections." int
+option "measure_qps" Q "Explicitly set master client QPS, \
+spread across threads and connections." int
+option "measure_depth" - "Set master client depth." int
+
+text "
+The --measure_* options aid in taking latency measurements of the
+memcached server without incurring significant client-side queuing
+delay.  --measure_connections allows the master to override the
+--connections option.  --measure_depth allows the master to operate as
+an \"open-loop\" client while other agents continue as a regular
+closed-loop clients.  --measure_qps lets you modulate the QPS the
+master queries at independent of other clients.  This theoretically
+normalizes the baseline queuing delay you expect to see across a wide
+range of --qps values.
+"
 
 text "
 Some options take a 'distribution' as an argument.
