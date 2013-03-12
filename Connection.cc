@@ -256,7 +256,7 @@ void Connection::drive_write_machine(double now) {
       issue_something(now);
       stats.log_op(op_queue.size());
 
-      if (args.skip_given && op_queue.size() >= (size_t) options.depth) {
+      if (options.skip && op_queue.size() >= (size_t) options.depth) {
         next_time += iagen->generate();
 
         while (next_time < now) {

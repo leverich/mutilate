@@ -33,6 +33,7 @@ typedef struct {
   int threads;
   enum distribution_t iadist;
   int warmup;
+  bool skip;
 
   bool roundrobin;
   int server_given;

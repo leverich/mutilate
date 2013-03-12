@@ -1017,6 +1017,7 @@ void args_to_options(options_t* options) {
   strcpy(options->ia, args.iadist_arg);
   options->warmup = args.warmup_given ? args.warmup_arg : 0;
   options->oob_thread = false;
+  options->skip = args.skip_given;
 }
 
 void init_random_stuff() {
