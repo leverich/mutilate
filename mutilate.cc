@@ -576,7 +576,9 @@ int main(int argc, char **argv) {
            total, stats.stop - stats.start);
 
     if (args.search_given && peak_qps > 0.0)
-      printf("Peak QPS  = %.1f\n\n", peak_qps);
+      printf("Peak QPS  = %.1f\n", peak_qps);
+
+    printf("\n");
 
     printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
            (double) stats.get_misses/stats.gets*100);
