@@ -234,12 +234,6 @@ void Connection::drive_write_machine(double now) {
   while (1) {
     switch (write_state) {
     case INIT_WRITE:
-      /*
-      if (options.iadist == EXPONENTIAL)
-        delay = generate_poisson(options.lambda);
-      else
-        delay = generate_uniform(options.lambda);
-      */
       delay = iagen->generate();
 
       next_time = now + delay;
@@ -262,12 +256,6 @@ void Connection::drive_write_machine(double now) {
       issue_something(now);
       stats.log_op(op_queue.size());
 
-      /*
-      if (options.iadist == EXPONENTIAL)
-        next_time += generate_poisson(options.lambda);
-      else
-        next_time += generate_uniform(options.lambda);
-      */
       next_time += iagen->generate();
 
       break;
