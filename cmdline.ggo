@@ -40,17 +40,20 @@ By default, each thread connects to every server."
 option "iadist" i "Inter-arrival distribution (distribution).  Note: \
 The distribution will automatically be adjusted to match the QPS given \
 by --qps." string default="exponential"
+option "skip" S "Skip transmissions if previous requests are late.  This \
+harms the long-term QPS average, but reduces spikes in QPS after \
+long latency requests."
 
 option "noload" - "Skip database loading."
 option "loadonly" - "Load database and then exit."
 
 option "blocking" B "Use blocking epoll().  May increase latency."
-option "no_nodelay" D "Don't use TCP_NODELAY."
+option "no_nodelay" - "Don't use TCP_NODELAY."
 
 option "warmup" w "Warmup time before starting measurement." int
 option "wait" W "Time to wait after startup to start measurement." int
 
-option "search" S "Search for the QPS where N-order statistic < Xus.  \
+option "search" - "Search for the QPS where N-order statistic < Xus.  \
 (i.e. --search 95:1000 means find the QPS where 95% of requests are \
 faster than 1000us)." string typestr="N:X"
 option "scan" - "Scan latency across QPS rates from min to max."
@@ -65,7 +68,7 @@ option "measure_connections" C "Master client connections per server, \
 overrides --connections." int
 option "measure_qps" Q "Explicitly set master client QPS, \
 spread across threads and connections." int
-option "measure_depth" - "Set master client depth." int
+option "measure_depth" D "Set master client connection depth." int
 
 text "
 The --measure_* options aid in taking latency measurements of the

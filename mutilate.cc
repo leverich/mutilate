@@ -210,6 +210,7 @@ void agent() {
     as.get_misses = stats.get_misses;
     as.start = stats.start;
     as.stop = stats.stop;
+    as.skips = stats.skips;
 
     string req = s_recv(socket);
     //    V("req = %s", req.c_str());
@@ -570,15 +571,17 @@ int main(int argc, char **argv) {
 
     int total = stats.gets + stats.sets;
 
-    printf("\nTotal QPS = %.1f (%d / %.1fs)\n\n",
+    printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
            total / (stats.stop - stats.start),
            total, stats.stop - stats.start);
 
     if (args.search_given && peak_qps > 0.0)
-      printf("Peak QPS = %.1f\n\n", peak_qps);
+      printf("Peak QPS  = %.1f\n\n", peak_qps);
 
-    printf("Misses = %" PRIu64 " (%.1f%%)\n\n", stats.get_misses,
+    printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
            (double) stats.get_misses/stats.gets*100);
+
+    printf("Skipped TXs = %" PRIu64 "\n\n", stats.skips);
 
     printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
            stats.rx_bytes,
