@@ -256,15 +256,16 @@ void Connection::drive_write_machine(double now) {
       issue_something(now);
       stats.log_op(op_queue.size());
 
-      if (options.skip && op_queue.size() >= (size_t) options.depth) {
-        next_time += iagen->generate();
+      next_time += iagen->generate();
+
+      if (options.skip && options.lambda > 0.0 &&
+          now - next_time > 0.005000 &&
+          op_queue.size() >= (size_t) options.depth) {
 
         while (next_time < now) {
           stats.skips++;
           next_time += iagen->generate();
         }
-      } else {
-        next_time += iagen->generate();
       }
 
       break;
