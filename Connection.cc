@@ -75,8 +75,9 @@ void Connection::reset() {
 }
 
 
-void Connection::issue_sasl() {
-  read_state = WAITING_FOR_SASL;
+void Connection::issue_sasl(struct bufferevent *bev) {
+  read_state = WAITING_FOR_OP;
+  Operation op; op.type = Operation::SASL; op_queue.push(op);
 
   string username = string(options.username);
   string password = string(options.password);
@@ -119,7 +120,7 @@ void Connection::issue_get(const char* key, double now) {
   op_queue.push(op);
 
   if (read_state == IDLE)
-    read_state = WAITING_FOR_GET;
+    read_state = WAITING_FOR_OP;
 
   if (options.binary) {
     // each line is 4-bytes
@@ -155,7 +156,7 @@ void Connection::issue_set(const char* key, const char* value, int length,
   op_queue.push(op);
 
   if (read_state == IDLE)
-    read_state = WAITING_FOR_SET;
+    read_state = WAITING_FOR_OP;
 
   if (options.binary) {
     // each line is 4-bytes
@@ -208,8 +209,10 @@ void Connection::pop_op() {
   if (op_queue.size() > 0) {
     Operation& op = op_queue.front();
     switch (op.type) {
-    case Operation::GET: read_state = WAITING_FOR_GET; break;
-    case Operation::SET: read_state = WAITING_FOR_SET; break;
+      case Operation::GET:
+      case Operation::SET:
+        read_state = WAITING_FOR_OP;
+        break;
     default: DIE("Not implemented.");
     }
   }
@@ -299,7 +302,7 @@ void Connection::drive_write_machine(double now) {
   }
 }
 
-void Connection::event_callback(short events) {
+void Connection::event_callback(struct bufferevent *bev, short events) {
   //  struct timeval now_tv;
   // event_base_gettimeofday_cached(base, &now_tv);
 
@@ -316,7 +319,7 @@ void Connection::event_callback(short events) {
     }
 
     if (options.sasl)
-      issue_sasl();
+      issue_sasl(bev);
     else
       read_state = IDLE;  // This is the most important part!
   } else if (events & BEV_EVENT_ERROR) {
@@ -338,8 +341,7 @@ void Connection::read_callback() {
 
   char *buf;
   Operation *op = NULL;
-  int length;
-  size_t n_read_out;
+  bool finished;
 
   double now;
 
@@ -356,139 +358,29 @@ void Connection::read_callback() {
 
     // Note: for binary, the whole get suite (GET, GET_DATA, END) is collapsed
     // into one state
-    case WAITING_FOR_GET:
+    case WAITING_FOR_OP:
       assert(op_queue.size() > 0);
 
-      if (options.binary) {
-        if (consume_binary_response(input)) {
-#if USE_CACHED_TIME
-            now = tv_to_double(&now_tv);
-#else
-            now = get_time();
-#endif
-#if HAVE_CLOCK_GETTIME
-            op->end_time = get_time_accurate();
-#else
-            op->end_time = now;
-#endif
-            stats.log_get(*op);
-
-            pop_op();
-            drive_write_machine(now);
-            break;
-        } else {
-          return;
-        }
-      }
-
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return;  // A whole line not received yet. Punt.
-
-      stats.rx_bytes += n_read_out; // strlen(buf);
-
-      if (!strcmp(buf, "END")) {
-        //        D("GET (%s) miss.", op->key.c_str());
-        stats.get_misses++;
-
-#if USE_CACHED_TIME
-        now = tv_to_double(&now_tv);
-#else
-        now = get_time();
-#endif
-#if HAVE_CLOCK_GETTIME
-        op->end_time = get_time_accurate();
-#else
-        op->end_time = now;
-#endif
-
-        stats.log_get(*op);
-
-        free(buf);
-
-        pop_op();
-        drive_write_machine();
-        break;
-      } else if (!strncmp(buf, "VALUE", 5)) {
-        sscanf(buf, "VALUE %*s %*d %d", &length);
-
-        // FIXME: check key name to see if it corresponds to the op at
-        // the head of the op queue?  This will be necessary to
-        // support "gets" where there may be misses.
-
-        data_length = length;
-        read_state = WAITING_FOR_GET_DATA;
-      }
-
-      free(buf);
-
-    case WAITING_FOR_GET_DATA:
-      assert(op_queue.size() > 0);
-
-      length = evbuffer_get_length(input);
-
-      if (length >= data_length + 2) {
-        // FIXME: Actually parse the value?  Right now we just drain it.
-        evbuffer_drain(input, data_length + 2);
-        read_state = WAITING_FOR_END;
-
-        stats.rx_bytes += data_length + 2;
-      } else {
+      finished = (options.binary) ?  consume_binary_response(input) :
+                                          consume_ascii_response(input, op);
+      if (!finished)
         return;
-      }
-    case WAITING_FOR_END:
-      assert(op_queue.size() > 0);
 
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-      if (buf == NULL) return; // Haven't received a whole line yet. Punt.
-
-      stats.rx_bytes += n_read_out;
-
-      if (!strcmp(buf, "END")) {
 #if USE_CACHED_TIME
-        now = tv_to_double(&now_tv);
+      now = tv_to_double(&now_tv);
 #else
-        now = get_time();
-#endif
-#if HAVE_CLOCK_GETTIME
-        op->end_time = get_time_accurate();
-#else
-        op->end_time = now;
-#endif
-
-        stats.log_get(*op);
-
-        free(buf);
-
-        pop_op();
-        drive_write_machine(now);
-        break;
-      } else {
-        DIE("Unexpected result when waiting for END");
-      }
-
-    case WAITING_FOR_SET:
-      assert(op_queue.size() > 0);
-
-      if (options.binary) {
-        if (!consume_binary_response(input)) return;
-      } else {
-        buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
-        if (buf == NULL) return; // Haven't received a whole line yet. Punt.
-        stats.rx_bytes += n_read_out;
-      }
-
       now = get_time();
-
+#endif
 #if HAVE_CLOCK_GETTIME
       op->end_time = get_time_accurate();
 #else
       op->end_time = now;
 #endif
+      if (op->type == Operation::GET)
+        stats.log_get(*op);
 
-      stats.log_set(*op);
-
-      if (!options.binary)
-        free(buf);
+      if (op->type == Operation::SET)
+        stats.log_get(*op);
 
       pop_op();
       drive_write_machine(now);
@@ -527,12 +419,6 @@ void Connection::read_callback() {
         }
       }
 
-      break;
-
-    case WAITING_FOR_SASL:
-      assert(options.binary);
-      if (!consume_binary_response(input)) return;
-      read_state = IDLE;
       break;
 
     default: DIE("not implemented");
@@ -579,13 +465,54 @@ bool Connection::consume_binary_response(evbuffer *input) {
   return true;
 }
 
+bool Connection::consume_ascii_response(evbuffer *input, Operation *op) {
+  struct evbuffer_ptr ptr;
+  size_t eol_len = 0;
+  int ret = 0;
+
+  // Wait for first line
+  ptr = evbuffer_search_eol(input, NULL, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
+  if (ptr.pos == -1) return false; // Don't have first line yet.
+
+  switch (op->type) {
+    case Operation::GET:
+      // is it "END"?
+      if (ptr.pos == 3) {
+        stats.get_misses++;
+        evbuffer_drain(input, ptr.pos + eol_len);
+        stats.rx_bytes += ptr.pos + eol_len;
+        return true;
+      }
+
+      // look for 2x /r/n.
+      ret |= evbuffer_ptr_set(input, &ptr, eol_len, EVBUFFER_PTR_ADD);
+      ptr = evbuffer_search_eol(input, &ptr, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
+      if (ptr.pos == -1 || ret) return false; // haven't gotten another line
+
+      ret |= evbuffer_ptr_set(input, &ptr, eol_len, EVBUFFER_PTR_ADD);
+      ptr = evbuffer_search_eol(input, &ptr, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
+      if (ptr.pos == -1 || ret) return false; // haven't gotten another line
+
+      // Fall through to drain.
+    case Operation::SET:
+      evbuffer_drain(input, ptr.pos + eol_len);
+      stats.rx_bytes += ptr.pos + eol_len;
+      return true;
+
+    default:
+      DIE("Internal Error: invalid op->type in consume_ascii_response. %d",
+              op->type);
+  }
+  return false;
+}
+
 void Connection::write_callback() {}
 void Connection::timer_callback() { drive_write_machine(); }
 
 // The follow are C trampolines for libevent callbacks.
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr) {
   Connection* conn = (Connection*) ptr;
-  conn->event_callback(events);
+  conn->event_callback(bev, events);
 }
 
 void bev_read_cb(struct bufferevent *bev, void *ptr) {
@@ -624,4 +551,16 @@ void Connection::start_loading() {
     issue_set(key, &random_char[index], valuesize->generate());
     loader_issued++;
   }
+}
+
+bool Connection::isIdle() {
+  //TODO(syang0) gotta make this more generic.
+  return read_state == IDLE;
+}
+
+int Connection::op_queues_size() {
+  int cnt = 0;
+  for (single_connection& conn: conns)
+    cnt += conn.op_queue.size();
+  return cnt;
 }

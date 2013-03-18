@@ -667,7 +667,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     bool restart = false;
     for (Connection *conn: connections)
-      if (conn->read_state != Connection::IDLE)
+      if (!conn->isIdle())
         restart = true;
 
     if (restart) continue;
@@ -688,7 +688,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
       bool restart = false;
       for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
+        if (!conn->isIdle())
           restart = true;
 
       if (restart) continue;
@@ -756,7 +756,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     bool restart = false;
     for (Connection *conn: connections)
-      if (conn->read_state != Connection::IDLE)
+      if (!conn->isIdle())
         restart = true;
 
     if (restart) {
@@ -771,7 +771,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
       bool restart = false;
       for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
+        if (!conn->isIdle())
           restart = true;
 
       if (restart) continue;

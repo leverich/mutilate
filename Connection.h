@@ -40,11 +40,7 @@ public:
     INIT_READ,
     LOADING,
     IDLE,
-    WAITING_FOR_SASL,
-    WAITING_FOR_GET,
-    WAITING_FOR_GET_DATA,
-    WAITING_FOR_END,
-    WAITING_FOR_SET,
+    WAITING_FOR_OP,
     MAX_READ_STATE,
   };
 
@@ -68,17 +64,19 @@ public:
   void pop_op();
   bool check_exit_condition(double now = 0.0);
   void drive_write_machine(double now = 0.0);
+  bool isIdle();
 
   void start_loading();
 
   void reset();
-  void issue_sasl();
+  void issue_sasl(struct bufferevent *bev);
 
-  void event_callback(short events);
+  void event_callback(struct bufferevent *bev, short events);
   void read_callback();
   void write_callback();
   void timer_callback();
   bool consume_binary_response(evbuffer *input);
+  bool consume_ascii_response(evbuffer *input, Operation *op);
 
   void set_priority(int pri);
 
@@ -86,10 +84,18 @@ public:
 
   std::queue<Operation> op_queue;
 
+  struct single_connection {
+    struct bufferevent *bev;
+    std::queue<Operation> op_queue;
+  };
+
 private:
   struct event_base *base;
   struct evdns_base *evdns;
   struct bufferevent *bev;
+
+  vector<single_connection> conns;
+  int op_queues_size();
 
   struct event *timer;  // Used to control inter-transmission time.
   double lambda, next_time; // Inter-transmission time parameters.
