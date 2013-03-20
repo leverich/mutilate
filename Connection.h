@@ -28,11 +28,22 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             VBUCKET_CONFIG_HANDLE vb, bool sampling = true);
+             bool sampling = true);
+
+  Connection(struct event_base* _base, struct evdns_base* _evdns,
+            options_t options, VBUCKET_CONFIG_HANDLE vb,
+            bool sampling = true);
+
   ~Connection();
 
-  string hostname;
-  string port;
+  struct single_connection {
+    single_connection(string hostname, string port, struct bufferevent *bev)
+            : hostname(hostname), port(port), bev(bev) {};
+    string hostname;
+    string port;
+    std::queue<Operation> op_queue;
+    struct bufferevent *bev;
+  };
 
   double start_time;  // Time when this connection began operations.
 
@@ -61,7 +72,7 @@ public:
   void issue_set(const char* key, const char* value, int length,
                  double now = 0.0);
   void issue_something(double now = 0.0);
-  void pop_op();
+  void pop_op(std::queue<Operation>& op_queue);
   bool check_exit_condition(double now = 0.0);
   void drive_write_machine(double now = 0.0);
   bool isIdle();
@@ -72,7 +83,7 @@ public:
   void issue_sasl(struct bufferevent *bev);
 
   void event_callback(struct bufferevent *bev, short events);
-  void read_callback();
+  void read_callback(struct bufferevent *bev);
   void write_callback();
   void timer_callback();
   bool consume_binary_response(evbuffer *input);
@@ -82,20 +93,13 @@ public:
 
   options_t options;
 
-  std::queue<Operation> op_queue;
-
-  struct single_connection {
-    struct bufferevent *bev;
-    std::queue<Operation> op_queue;
-  };
-
 private:
   struct event_base *base;
   struct evdns_base *evdns;
-  struct bufferevent *bev;
 
   vector<single_connection> conns;
   int op_queues_size();
+  single_connection& find_conn(struct bufferevent *bev);
 
   struct event *timer;  // Used to control inter-transmission time.
   double lambda, next_time; // Inter-transmission time parameters.

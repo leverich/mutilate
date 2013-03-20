@@ -234,6 +234,7 @@ void sync_agent(zmq::socket_t* socket) {
 }
 #endif
 
+//TODO(syang0) shouldn't this be converted to parse_host too?
 string name_to_ipaddr(string host) {
   char *s_copy = new char[host.length() + 1];
   strcpy(s_copy, host.c_str());
@@ -313,8 +314,11 @@ int main(int argc, char **argv) {
     DIE("--connections must be between [1,%d]", MAXIMUM_CONNECTIONS);
   //  if (get_distribution(args.iadist_arg) == -1)
   //    DIE("--iadist invalid: %s", args.iadist_arg);
-  if (!args.server_given && !args.agentmode_given)
-    DIE("--server or --agentmode must be specified.");
+  if (!args.server_given && !args.agentmode_given && !args.membaseConfig_given)
+    DIE("--server or --agentmode and/or --membaseConfig must be specified.");
+
+  if (args.membaseConfig_given && args.server_given)
+    DIE("Cannot specify both --membaseConfig and --server. Pick one.");
 
   // TODO: Discover peers, share arguments.
 
@@ -634,28 +638,29 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   vector<Connection*> connections;
   vector<Connection*> server_lead;
 
-  for (auto s: servers) {
-    // Split args.server_arg[s] into host:port using strtok().
-    char *s_copy = new char[s.length() + 1];
-    strcpy(s_copy, s.c_str());
-
-    char *h_ptr = strtok_r(s_copy, ":", &saveptr);
-    char *p_ptr = strtok_r(NULL, ":", &saveptr);
-
-    if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
-
-    string hostname = h_ptr;
-    string port = "11211";
-    if (p_ptr) port = p_ptr;
-
-    delete[] s_copy;
-
+  //TODO(syang0) check that if membaseConfig is given, no server can be given too
+  if (args.membaseConfig_given) {
+    assert(vb);
     for (int c = 0; c < options.connections; c++) {
-      Connection* conn = new Connection(base, evdns, hostname, port, options, vb,
+      Connection* conn = new Connection(base, evdns, options, vb,
                                         args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);
       if (c == 0) server_lead.push_back(conn);
+    }
+  } else {
+    for (auto s: servers) {
+      string hostname, port;
+      if(!parse_host(s.c_str(), hostname, port))
+        DIE("strtok(.., \":\") failed to parse %s", s.c_str());
+
+      for (int c = 0; c < options.connections; c++) {
+        Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                          args.agentmode_given ? false :
+                                          true);
+        connections.push_back(conn);
+        if (c == 0) server_lead.push_back(conn);
+      }
     }
   }
 
@@ -863,9 +868,10 @@ void args_to_options(options_t* options) {
   options->blocking = args.blocking_given;
   options->qps = args.qps_arg;
   options->threads = args.threads_arg;
-  options->server_given = args.server_given;
   options->roundrobin = args.roundrobin_given;
 
+  options->server_given = (args.membaseConfig_given) ? 1 : args.server_given;
+  
   int connections = options->connections;
   if (options->roundrobin) {
     connections *= (options->server_given > options->threads ?

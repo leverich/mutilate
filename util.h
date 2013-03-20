@@ -48,5 +48,6 @@ uint64_t fnv_64_buf(const void* buf, size_t len);
 inline uint64_t fnv_64(uint64_t in) { return fnv_64_buf(&in, sizeof(in)); }
 
 void generate_key(int n, int length, char *buf);
+int parse_host(const char *in, std::string& hostname, std::string& port);
 
 #endif // UTIL_H

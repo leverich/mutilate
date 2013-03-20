@@ -17,10 +17,10 @@
 #include "util.h"
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
-                       string _hostname, string _port, options_t _options,
-                       VBUCKET_CONFIG_HANDLE vb, bool sampling) :
-  hostname(_hostname), port(_port), start_time(0),
-  stats(sampling), options(_options), base(_base), evdns(_evdns), vb(vb)
+                       string hostname, string port, options_t _options,
+                       bool sampling) :
+        start_time(0), stats(sampling), options(_options),
+        base(_base), evdns(_evdns), vb(NULL)
 {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
@@ -37,6 +37,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   read_state = INIT_READ;
   write_state = INIT_WRITE;
 
+  struct bufferevent *bev;
   bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
   bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -47,17 +48,64 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     DIE("bufferevent_socket_connect_hostname()");
 
   timer = evtimer_new(base, timer_cb, this);
+
+  single_connection conn(hostname, port, bev);
+  conns.push_back(conn);
 }
 
+Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
+                       options_t options, VBUCKET_CONFIG_HANDLE vb,
+                       bool sampling) :
+  start_time(0), stats(sampling), options(options),
+  base(_base), evdns(_evdns), conns(), vb(vb)
+{
+  valuesize = createGenerator(options.valuesize);
+  keysize = createGenerator(options.keysize);
+  keygen = new KeyGenerator(keysize, options.records);
 
+  if (options.lambda <= 0) {
+    iagen = createGenerator("0");
+  } else {
+    D("iagen = createGenerator(%s)", options.ia);
+    iagen = createGenerator(options.ia);
+    iagen->set_lambda(options.lambda);
+  }
+
+  read_state = INIT_READ;
+  write_state = INIT_WRITE;
+
+  for (int i = 0; i < vbucket_config_get_num_servers(vb); i ++) {
+    struct bufferevent *bev;
+    string hostname, port;
+    const char *server = vbucket_config_get_server(vb, i);
+    if(!parse_host(server, hostname, port))
+      DIE("strtok(.., \":\") failed to parse %s", server);
+
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+
+    if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
+                                            hostname.c_str(),
+                                            atoi(port.c_str())))
+      DIE("bufferevent_socket_connect_hostname()");
+
+    timer = evtimer_new(base, timer_cb, this);
+
+
+    single_connection conn(hostname, port, bev);
+    conns.push_back(conn);
+  }
+}
 
 Connection::~Connection() {
   event_free(timer);
   timer = NULL;
 
   // FIXME:  W("Drain op_q?");
-
-  bufferevent_free(bev);
+  for (struct single_connection& conn : conns) {
+    free(conn.bev);
+  }
 
   delete iagen;
   delete keygen;
@@ -67,7 +115,7 @@ Connection::~Connection() {
 
 void Connection::reset() {
   // FIXME: Actually check the connection, drain all bufferevents, drain op_q.
-  assert(op_queue.size() == 0);
+  assert(op_queues_size() == 0);
   evtimer_del(timer);
   read_state = IDLE;
   write_state = INIT_WRITE;
@@ -77,6 +125,7 @@ void Connection::reset() {
 
 void Connection::issue_sasl(struct bufferevent *bev) {
   read_state = WAITING_FOR_OP;
+  auto& op_queue = find_conn(bev).op_queue;
   Operation op; op.type = Operation::SASL; op_queue.push(op);
 
   string username = string(options.username);
@@ -93,9 +142,26 @@ void Connection::issue_sasl(struct bufferevent *bev) {
 }
 
 void Connection::issue_get(const char* key, double now) {
+  struct bufferevent *bev = NULL;
+  std::queue<Operation>* op_queue;
+  uint16_t keylen = strlen(key);
+  uint16_t vbucket_id = 0;
   Operation op;
   int l;
-  uint16_t keylen = strlen(key);
+
+  //TODO(syang0) Test, comment this out and you should see misses.
+  if (vb) {
+    vbucket_id = vbucket_get_vbucket_by_key(vb, key, keylen);
+    int serverIndex = vbucket_get_master(vb, vbucket_id);
+    single_connection& conn = conns[serverIndex];
+    op_queue = &conn.op_queue;
+    bev = conn.bev;
+  } else {
+    single_connection& conn = conns.front();
+    op_queue = &(conn.op_queue);
+    bev = conn.bev;
+  }
+
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -117,7 +183,7 @@ void Connection::issue_get(const char* key, double now) {
   op.type = Operation::GET;
   op.key = string(key);
 
-  op_queue.push(op);
+  op_queue->push(op);
 
   if (read_state == IDLE)
     read_state = WAITING_FOR_OP;
@@ -141,9 +207,24 @@ void Connection::issue_get(const char* key, double now) {
 
 void Connection::issue_set(const char* key, const char* value, int length,
                            double now) {
+  struct bufferevent *bev = NULL;
+  std::queue<Operation>* op_queue;
+  uint16_t keylen = strlen(key);
+  uint16_t vbucket_id = 0;
   Operation op;
   int l;
-  uint16_t keylen = strlen(key);
+
+  if (vb) {
+    vbucket_id = vbucket_get_vbucket_by_key(vb, key, keylen);
+    int serverIndex = vbucket_get_master(vb, vbucket_id);
+    single_connection& conn = conns[serverIndex];
+    op_queue = &conn.op_queue;
+    bev = conn.bev;
+  } else {
+    single_connection& conn = conns.front();
+    op_queue = &(conn.op_queue);
+    bev = conn.bev;
+  }
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -153,14 +234,13 @@ void Connection::issue_set(const char* key, const char* value, int length,
 #endif
 
   op.type = Operation::SET;
-  op_queue.push(op);
+  op_queue->push(op);
 
   if (read_state == IDLE)
     read_state = WAITING_FOR_OP;
 
   if (options.binary) {
     // each line is 4-bytes
-    uint16_t vbucket_id = vb ? vbucket_get_vbucket_by_key(vb, key, keylen) : 0;
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
                         0x08, 0x00, htons(vbucket_id),
                         htonl(keylen + 8 + length)};
@@ -197,7 +277,7 @@ void Connection::issue_something(double now) {
   }
 }
 
-void Connection::pop_op() {
+void Connection::pop_op(std::queue<Operation>& op_queue) {
   assert(op_queue.size() > 0);
 
   op_queue.pop();
@@ -257,7 +337,7 @@ void Connection::drive_write_machine(double now) {
       break;
 
     case ISSUING:
-      if (op_queue.size() >= (size_t) options.depth) {
+      if (op_queues_size() >= (size_t) options.depth) {
         write_state = WAITING_FOR_OPQ;
         return;
       } else if (now < next_time) {
@@ -267,7 +347,7 @@ void Connection::drive_write_machine(double now) {
       }
 
       issue_something(now);
-      stats.log_op(op_queue.size());
+      stats.log_op(op_queues_size());
 
       /*
       if (options.iadist == EXPONENTIAL)
@@ -293,7 +373,7 @@ void Connection::drive_write_machine(double now) {
       break;
 
     case WAITING_FOR_OPQ:
-      if (op_queue.size() >= (size_t) options.depth) return;
+      if (op_queues_size() >= (size_t) options.depth) return;
       write_state = ISSUING;
       break;
 
@@ -307,7 +387,8 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
   // event_base_gettimeofday_cached(base, &now_tv);
 
   if (events & BEV_EVENT_CONNECTED) {
-    D("Connected to %s:%s.", hostname.c_str(), port.c_str());
+    single_connection conn = find_conn(bev);
+    D("Connected to %s:%s.", conn.hostname.c_str(), conn.port.c_str());
     int fd = bufferevent_getfd(bev);
     if (fd < 0) DIE("bufferevent_getfd");
 
@@ -332,7 +413,8 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
   }
 }
 
-void Connection::read_callback() {
+void Connection::read_callback(struct bufferevent *bev) {
+  auto& op_queue = find_conn(bev).op_queue;
   struct evbuffer *input = bufferevent_get_input(bev);
 #if USE_CACHED_TIME
   struct timeval now_tv;
@@ -382,7 +464,7 @@ void Connection::read_callback() {
       if (op->type == Operation::SET)
         stats.log_get(*op);
 
-      pop_op();
+      pop_op(op_queue);
       drive_write_machine(now);
       break;
 
@@ -398,7 +480,7 @@ void Connection::read_callback() {
       }
 
       loader_completed++;
-      pop_op();
+      pop_op(op_queue);
 
       if (loader_completed == options.records) {
         D("Finished loading.");
@@ -517,7 +599,7 @@ void bev_event_cb(struct bufferevent *bev, short events, void *ptr) {
 
 void bev_read_cb(struct bufferevent *bev, void *ptr) {
   Connection* conn = (Connection*) ptr;
-  conn->read_callback();
+  conn->read_callback(bev);
 }
 
 void bev_write_cb(struct bufferevent *bev, void *ptr) {
@@ -531,8 +613,10 @@ void timer_cb(evutil_socket_t fd, short what, void *ptr) {
 }
 
 void Connection::set_priority(int pri) {
-  if (bufferevent_priority_set(bev, pri))
-    DIE("bufferevent_set_priority(bev, %d) failed", pri);
+  for (single_connection conn : conns) {
+    if (bufferevent_priority_set(conn.bev, pri))
+      DIE("bufferevent_set_priority(bev, %d) failed", pri);
+  }
 }
 
 void Connection::start_loading() {
@@ -553,8 +637,20 @@ void Connection::start_loading() {
   }
 }
 
+Connection::single_connection& Connection::find_conn(struct bufferevent *bev) {
+  // Fast path for standard mutilate.
+  if (conns.size() == 0)
+    return conns.front();
+
+  for(single_connection& conn: conns) {
+    if (conn.bev == bev)
+      return conn;
+  }
+
+  DIE("Can't find op_queue with associated *bev");
+}
+
 bool Connection::isIdle() {
-  //TODO(syang0) gotta make this more generic.
   return read_state == IDLE;
 }
 
