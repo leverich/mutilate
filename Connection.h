@@ -38,9 +38,10 @@ public:
 
   struct single_connection {
     single_connection(string hostname, string port, struct bufferevent *bev)
-            : hostname(hostname), port(port), bev(bev) {};
+            : hostname(hostname), port(port), connected(false), bev(bev) {};
     string hostname;
     string port;
+    bool connected;
     std::queue<Operation> op_queue;
     struct bufferevent *bev;
   };
@@ -72,7 +73,6 @@ public:
   void issue_set(const char* key, const char* value, int length,
                  double now = 0.0);
   void issue_something(double now = 0.0);
-  void pop_op(std::queue<Operation>& op_queue);
   bool check_exit_condition(double now = 0.0);
   void drive_write_machine(double now = 0.0);
   bool isIdle();
@@ -80,7 +80,7 @@ public:
   void start_loading();
 
   void reset();
-  void issue_sasl(struct bufferevent *bev);
+  void start_sasl();
 
   void event_callback(struct bufferevent *bev, short events);
   void read_callback(struct bufferevent *bev);
@@ -96,10 +96,8 @@ public:
 private:
   struct event_base *base;
   struct evdns_base *evdns;
-
   vector<single_connection> conns;
-  int op_queues_size();
-  single_connection& find_conn(struct bufferevent *bev);
+  VBUCKET_CONFIG_HANDLE vb;
 
   struct event *timer;  // Used to control inter-transmission time.
   double lambda, next_time; // Inter-transmission time parameters.
@@ -114,5 +112,7 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
 
-  VBUCKET_CONFIG_HANDLE vb;
+  int op_queues_size();
+  single_connection& find_conn(struct bufferevent *bev);
+  void issue_sasl(struct bufferevent *bev);
 };

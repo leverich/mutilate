@@ -122,6 +122,10 @@ void Connection::reset() {
   stats = ConnectionStats(stats.sampling);
 }
 
+void Connection::start_sasl() {
+  for(single_connection& conn : conns)
+    issue_sasl(conn.bev);
+}
 
 void Connection::issue_sasl(struct bufferevent *bev) {
   read_state = WAITING_FOR_OP;
@@ -142,24 +146,16 @@ void Connection::issue_sasl(struct bufferevent *bev) {
 }
 
 void Connection::issue_get(const char* key, double now) {
-  struct bufferevent *bev = NULL;
-  std::queue<Operation>* op_queue;
+  single_connection* conn = &(conns.front());
   uint16_t keylen = strlen(key);
   uint16_t vbucket_id = 0;
   Operation op;
   int l;
 
-  //TODO(syang0) Test, comment this out and you should see misses.
   if (vb) {
     vbucket_id = vbucket_get_vbucket_by_key(vb, key, keylen);
     int serverIndex = vbucket_get_master(vb, vbucket_id);
-    single_connection& conn = conns[serverIndex];
-    op_queue = &conn.op_queue;
-    bev = conn.bev;
-  } else {
-    single_connection& conn = conns.front();
-    op_queue = &(conn.op_queue);
-    bev = conn.bev;
+    conn = &(conns[serverIndex]);
   }
 
 
@@ -183,7 +179,7 @@ void Connection::issue_get(const char* key, double now) {
   op.type = Operation::GET;
   op.key = string(key);
 
-  op_queue->push(op);
+  conn->op_queue.push(op);
 
   if (read_state == IDLE)
     read_state = WAITING_FOR_OP;
@@ -195,11 +191,11 @@ void Connection::issue_get(const char* key, double now) {
                        0x00, 0x00, htons(vbucket_id),
                        htonl(keylen) };
 
-    bufferevent_write(bev, &h, 24); // size does not include extras
-    bufferevent_write(bev, key, keylen);
+    bufferevent_write(conn->bev, &h, 24); // size does not include extras
+    bufferevent_write(conn->bev, key, keylen);
     l = 24 + keylen;
   } else {
-    l = evbuffer_add_printf(bufferevent_get_output(bev), "get %s\r\n", key);
+    l = evbuffer_add_printf(bufferevent_get_output(conn->bev), "get %s\r\n", key);
   }
 
   if (read_state != LOADING) stats.tx_bytes += l;
@@ -207,8 +203,7 @@ void Connection::issue_get(const char* key, double now) {
 
 void Connection::issue_set(const char* key, const char* value, int length,
                            double now) {
-  struct bufferevent *bev = NULL;
-  std::queue<Operation>* op_queue;
+  single_connection* conn = &(conns.front());
   uint16_t keylen = strlen(key);
   uint16_t vbucket_id = 0;
   Operation op;
@@ -217,13 +212,7 @@ void Connection::issue_set(const char* key, const char* value, int length,
   if (vb) {
     vbucket_id = vbucket_get_vbucket_by_key(vb, key, keylen);
     int serverIndex = vbucket_get_master(vb, vbucket_id);
-    single_connection& conn = conns[serverIndex];
-    op_queue = &conn.op_queue;
-    bev = conn.bev;
-  } else {
-    single_connection& conn = conns.front();
-    op_queue = &(conn.op_queue);
-    bev = conn.bev;
+    conn = &(conns[serverIndex]);
   }
 
 #if HAVE_CLOCK_GETTIME
@@ -234,7 +223,7 @@ void Connection::issue_set(const char* key, const char* value, int length,
 #endif
 
   op.type = Operation::SET;
-  op_queue->push(op);
+  conn->op_queue.push(op);
 
   if (read_state == IDLE)
     read_state = WAITING_FOR_OP;
@@ -245,15 +234,15 @@ void Connection::issue_set(const char* key, const char* value, int length,
                         0x08, 0x00, htons(vbucket_id),
                         htonl(keylen + 8 + length)};
 
-    bufferevent_write(bev, &h, 32); // With extras
-    bufferevent_write(bev, key, keylen);
-    bufferevent_write(bev, value, length);
+    bufferevent_write(conn->bev, &h, 32); // With extras
+    bufferevent_write(conn->bev, key, keylen);
+    bufferevent_write(conn->bev, value, length);
     l = 24 + h.body_len;
   } else {
-    l = evbuffer_add_printf(bufferevent_get_output(bev),
+    l = evbuffer_add_printf(bufferevent_get_output(conn->bev),
                                 "set %s 0 0 %d\r\n", key, length);
-    bufferevent_write(bev, value, length);
-    bufferevent_write(bev, "\r\n", 2);
+    bufferevent_write(conn->bev, value, length);
+    bufferevent_write(conn->bev, "\r\n", 2);
     l += length + 2;
   }
 
@@ -274,27 +263,6 @@ void Connection::issue_something(double now) {
     issue_set(key, &random_char[index], valuesize->generate(), now);
   } else {
     issue_get(key, now);
-  }
-}
-
-void Connection::pop_op(std::queue<Operation>& op_queue) {
-  assert(op_queue.size() > 0);
-
-  op_queue.pop();
-
-  if (read_state == LOADING) return;
-  read_state = IDLE;
-
-  // Advance the read state machine.
-  if (op_queue.size() > 0) {
-    Operation& op = op_queue.front();
-    switch (op.type) {
-      case Operation::GET:
-      case Operation::SET:
-        read_state = WAITING_FOR_OP;
-        break;
-    default: DIE("Not implemented.");
-    }
   }
 }
 
@@ -387,7 +355,8 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
   // event_base_gettimeofday_cached(base, &now_tv);
 
   if (events & BEV_EVENT_CONNECTED) {
-    single_connection conn = find_conn(bev);
+    single_connection& conn = find_conn(bev);
+    conn.connected = true;
     D("Connected to %s:%s.", conn.hostname.c_str(), conn.port.c_str());
     int fd = bufferevent_getfd(bev);
     if (fd < 0) DIE("bufferevent_getfd");
@@ -399,10 +368,15 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
         DIE("setsockopt()");
     }
 
-    if (options.sasl)
-      issue_sasl(bev);
-    else
+    bool allConnsConnected = true;
+    for (single_connection& c : conns) {
+      if (!c.connected)
+        allConnsConnected = false;
+    }
+
+    if (allConnsConnected)
       read_state = IDLE;  // This is the most important part!
+
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev);
     if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
@@ -435,13 +409,16 @@ void Connection::read_callback(struct bufferevent *bev) {
     if (op_queue.size() > 0) op = &op_queue.front();
 
     switch (read_state) {
-    case INIT_READ: DIE("event from uninitialized connection");
     case IDLE: return;  // We munched all the data we expected?
 
     // Note: for binary, the whole get suite (GET, GET_DATA, END) is collapsed
     // into one state
     case WAITING_FOR_OP:
-      assert(op_queue.size() > 0);
+      if (op_queue.empty()) {
+        // Maybe we're waiting on other connections?
+        assert(op_queues_size() > 0);
+        return;
+      }
 
       finished = (options.binary) ?  consume_binary_response(input) :
                                           consume_ascii_response(input, op);
@@ -464,12 +441,19 @@ void Connection::read_callback(struct bufferevent *bev) {
       if (op->type == Operation::SET)
         stats.log_get(*op);
 
-      pop_op(op_queue);
+      op_queue.pop();
+      if (op_queues_size() == 0)
+        read_state = IDLE;
+
       drive_write_machine(now);
       break;
 
     case LOADING:
-      assert(op_queue.size() > 0);
+      if (op_queue.empty()) {
+        // Maybe we're waiting on other connections?
+        assert(op_queues_size() > 0);
+        return;
+      }
 
       if (options.binary) {
         if (!consume_binary_response(input)) return;
@@ -480,7 +464,7 @@ void Connection::read_callback(struct bufferevent *bev) {
       }
 
       loader_completed++;
-      pop_op(op_queue);
+      op_queue.pop();
 
       if (loader_completed == options.records) {
         D("Finished loading.");

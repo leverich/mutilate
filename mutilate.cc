@@ -638,7 +638,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   vector<Connection*> connections;
   vector<Connection*> server_lead;
 
-  //TODO(syang0) check that if membaseConfig is given, no server can be given too
   if (args.membaseConfig_given) {
     assert(vb);
     for (int c = 0; c < options.connections; c++) {
@@ -677,6 +676,25 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     if (restart) continue;
     else break;
+  }
+
+  if (options.sasl) {
+    for(auto s: connections) s->start_sasl();
+
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->isIdle())
+          restart = true;
+
+      if (restart) continue;
+      else break;
+    }
   }
 
   // Load database on lead connection for each server.
