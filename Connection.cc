@@ -353,9 +353,9 @@ void Connection::drive_write_machine(double now) {
 void Connection::event_callback(struct bufferevent *bev, short events) {
   //  struct timeval now_tv;
   // event_base_gettimeofday_cached(base, &now_tv);
+  single_connection& conn = find_conn(bev);
 
   if (events & BEV_EVENT_CONNECTED) {
-    single_connection& conn = find_conn(bev);
     conn.connected = true;
     D("Connected to %s:%s.", conn.hostname.c_str(), conn.port.c_str());
     int fd = bufferevent_getfd(bev);
@@ -381,7 +381,7 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
     int err = bufferevent_socket_get_dns_error(bev);
     if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
 
-    DIE("BEV_EVENT_ERROR: %s", strerror(errno));
+    DIE("BEV_EVENT_ERROR: %s for %s", strerror(errno), conn.hostname.c_str());
   } else if (events & BEV_EVENT_EOF) {
     DIE("Unexpected EOF from server.");
   }
@@ -534,35 +534,35 @@ bool Connection::consume_binary_response(evbuffer *input) {
 bool Connection::consume_ascii_response(evbuffer *input, Operation *op) {
   struct evbuffer_ptr ptr;
   size_t eol_len = 0;
-  int ret = 0;
+  const char* header;
+  int vallen = 0, datalen = 0;
 
   // Wait for first line
   ptr = evbuffer_search_eol(input, NULL, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
   if (ptr.pos == -1) return false; // Don't have first line yet.
+  datalen = ptr.pos + eol_len;
 
   switch (op->type) {
     case Operation::GET:
       // is it "END"?
       if (ptr.pos == 3) {
         stats.get_misses++;
-        evbuffer_drain(input, ptr.pos + eol_len);
-        stats.rx_bytes += ptr.pos + eol_len;
+        evbuffer_drain(input, datalen);
+        stats.rx_bytes += datalen;
         return true;
       }
 
-      // look for 2x /r/n.
-      ret |= evbuffer_ptr_set(input, &ptr, eol_len, EVBUFFER_PTR_ADD);
-      ptr = evbuffer_search_eol(input, &ptr, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
-      if (ptr.pos == -1 || ret) return false; // haven't gotten another line
-
-      ret |= evbuffer_ptr_set(input, &ptr, eol_len, EVBUFFER_PTR_ADD);
-      ptr = evbuffer_search_eol(input, &ptr, &eol_len, EVBUFFER_EOL_CRLF_STRICT);
-      if (ptr.pos == -1 || ret) return false; // haven't gotten another line
+      header = reinterpret_cast<char*>(evbuffer_pullup(input, datalen));
+      sscanf(header, "VALUE %*s %*d %d", &vallen);
+      // expect length = <Header>/r/n + <value>/r/n + END/r/n
+      datalen += (vallen + 2) + 5;
+      if (evbuffer_get_length(input) < datalen)
+        return false;
 
       // Fall through to drain.
     case Operation::SET:
-      evbuffer_drain(input, ptr.pos + eol_len);
-      stats.rx_bytes += ptr.pos + eol_len;
+      evbuffer_drain(input, datalen);
+      stats.rx_bytes += datalen;
       return true;
 
     default:
