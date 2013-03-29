@@ -234,24 +234,11 @@ void sync_agent(zmq::socket_t* socket) {
 }
 #endif
 
-//TODO(syang0) shouldn't this be converted to parse_host too?
-string name_to_ipaddr(string host) {
-  char *s_copy = new char[host.length() + 1];
-  strcpy(s_copy, host.c_str());
-
-  char *saveptr = NULL;  // For reentrant strtok().
-
-  char *h_ptr = strtok_r(s_copy, ":", &saveptr);
-  char *p_ptr = strtok_r(NULL, ":", &saveptr);
-
+string name_to_ipaddr(const char *host) {
   char ipaddr[16];
-
-  if (h_ptr == NULL)
-    DIE("strtok(.., \":\") failed to parse %s", host.c_str());
-
-  string hostname = h_ptr;
-  string port = "11211";
-  if (p_ptr) port = p_ptr;
+  string hostname, port;
+  if (!parse_host(host, hostname, port))
+    DIE("strtok(.., \":\") failed to parse %s", host);
 
   struct evutil_addrinfo hints;
   struct evutil_addrinfo *answer = NULL;
@@ -266,10 +253,10 @@ string name_to_ipaddr(string host) {
   hints.ai_flags = EVUTIL_AI_ADDRCONFIG;
 
   /* Look up the hostname. */
-  err = evutil_getaddrinfo(h_ptr, NULL, &hints, &answer);
+  err = evutil_getaddrinfo(hostname.c_str(), NULL, &hints, &answer);
   if (err < 0) {
     DIE("Error while resolving '%s': %s",
-        host.c_str(), evutil_gai_strerror(err));
+        host, evutil_gai_strerror(err));
   }
 
   if (answer == NULL) DIE("No DNS answer.");
@@ -286,9 +273,7 @@ string name_to_ipaddr(string host) {
 
   inet_ntop (answer->ai_family, ptr, ipaddr, 16);
 
-  D("Resolved %s to %s", h_ptr, (string(ipaddr) + ":" + string(port)).c_str());
-
-  delete[] s_copy;
+  D("Resolved %s to %s", hostname.c_str(), (string(ipaddr) + ":" + port).c_str());
 
   return string(ipaddr) + ":" + string(port);
 }
@@ -352,10 +337,31 @@ int main(int argc, char **argv) {
 
   pthread_barrier_init(&barrier, NULL, options.threads);
 
-  //TODO(syang0) this will be a URL later.
+  char *vb_data = NULL;
+  vector<string> servers;
   VBUCKET_CONFIG_HANDLE vb = NULL;
   if (args.membaseConfig_given) {
-    vb = vbucket_config_parse_file(args.membaseConfig_arg);
+    FILE *f = fopen(args.membaseConfig_arg, "r");
+    if (f == NULL) {
+      DIE("Unable to open membase config file %s", args.membaseConfig_arg);
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    vb_data = (char*) calloc(sizeof(char), size+1);
+    if (vb_data == NULL) {
+        DIE("Unable to read membase config file %s", args.membaseConfig_arg);
+    }
+    size_t nread = fread(vb_data, sizeof(char), size+1, f);
+    fclose(f);
+    if (nread != (size_t)size) {
+        free(vb_data);
+        DIE("Unable to read fully membase config file %s",
+                args.membaseConfig_arg);
+    }
+
+    vb = vbucket_config_parse_string(vb_data);
     if (vb == NULL)
       DIE("vbucket error - %s", vbucket_get_error());
 
@@ -367,13 +373,19 @@ int main(int argc, char **argv) {
     V("vBucket config file loaded from %s with %d servers and %d vBuckets",
             args.membaseConfig_arg, numServers, numvBuckets);
 
-    // Toggle Binary stuff
+    // Toggle args stuff
     options.binary = true;
+    options.server_given = numServers;
+
   }
 
-  vector<string> servers;
-  for (unsigned int s = 0; s < args.server_given; s++)
-    servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  if (vb) {
+    for (unsigned int s = 0; s < options.server_given; s++)
+      servers.push_back(vbucket_config_get_server(vb, s));
+  } else {
+    for (unsigned int s = 0; s < options.server_given; s++)
+      servers.push_back(name_to_ipaddr(args.server_arg[s]));
+  }
 
   ConnectionStats stats;
 
@@ -535,7 +547,6 @@ void go(const vector<string>& servers, options_t& options,
     prep_agent(servers, options);
   }
 #endif
-
   if (options.threads > 1) {
     pthread_t pt[options.threads];
     struct thread_data td[options.threads];
@@ -610,7 +621,7 @@ void* thread_main(void *arg) {
   return cs;
 }
 
-void do_mutilate(const vector<string>& servers, options_t& options,
+void do_mutilate(const vector<string>& server_strings, options_t& options,
                  ConnectionStats& stats, VBUCKET_CONFIG_HANDLE vb, bool master
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
@@ -635,32 +646,30 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   double start = get_time();
   double now = start;
 
+  vector<Connection::Host> hosts;
+  for(auto s: server_strings) {
+    Connection::Host host;
+    if(!parse_host(s.c_str(), host.hostname, host.port))
+        DIE("strtok(.., \":\") failed to parse %s", s.c_str());
+
+    hosts.push_back(host);
+  }
+
   vector<Connection*> connections;
   vector<Connection*> server_lead;
 
-  if (args.membaseConfig_given) {
-    assert(vb);
+  for (auto h: hosts) {
+    vector<Connection::Host> single_host(1, h);
+    vector<Connection::Host>& host_list = (vb) ? hosts : single_host;
     for (int c = 0; c < options.connections; c++) {
-      Connection* conn = new Connection(base, evdns, options, vb,
-                                        args.agentmode_given ? false :
+      Connection* conn = new Connection(base, evdns, options, host_list,
+                                        vb, args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);
       if (c == 0) server_lead.push_back(conn);
     }
-  } else {
-    for (auto s: servers) {
-      string hostname, port;
-      if(!parse_host(s.c_str(), hostname, port))
-        DIE("strtok(.., \":\") failed to parse %s", s.c_str());
 
-      for (int c = 0; c < options.connections; c++) {
-        Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                          args.agentmode_given ? false :
-                                          true);
-        connections.push_back(conn);
-        if (c == 0) server_lead.push_back(conn);
-      }
-    }
+    if (vb) break; // if membase, do only connections.
   }
 
   // Wait for all Connections to become IDLE.

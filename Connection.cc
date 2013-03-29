@@ -17,45 +17,8 @@
 #include "util.h"
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
-                       string hostname, string port, options_t _options,
-                       bool sampling) :
-        start_time(0), stats(sampling), options(_options),
-        base(_base), evdns(_evdns), vb(NULL)
-{
-  valuesize = createGenerator(options.valuesize);
-  keysize = createGenerator(options.keysize);
-  keygen = new KeyGenerator(keysize, options.records);
-
-  if (options.lambda <= 0) {
-    iagen = createGenerator("0");
-  } else {
-    D("iagen = createGenerator(%s)", options.ia);
-    iagen = createGenerator(options.ia);
-    iagen->set_lambda(options.lambda);
-  }
-
-  read_state = INIT_READ;
-  write_state = INIT_WRITE;
-
-  struct bufferevent *bev;
-  bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
-  bufferevent_enable(bev, EV_READ | EV_WRITE);
-
-  if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
-                                          hostname.c_str(),
-                                          atoi(port.c_str())))
-    DIE("bufferevent_socket_connect_hostname()");
-
-  timer = evtimer_new(base, timer_cb, this);
-
-  single_connection conn(hostname, port, bev);
-  conns.push_back(conn);
-}
-
-Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
-                       options_t options, VBUCKET_CONFIG_HANDLE vb,
-                       bool sampling) :
+                       options_t options, vector<Host> hosts,
+                       VBUCKET_CONFIG_HANDLE vb, bool sampling) :
   start_time(0), stats(sampling), options(options),
   base(_base), evdns(_evdns), conns(), vb(vb)
 {
@@ -74,26 +37,21 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   read_state = INIT_READ;
   write_state = INIT_WRITE;
 
-  for (int i = 0; i < vbucket_config_get_num_servers(vb); i ++) {
+  for (Host h : hosts) {
     struct bufferevent *bev;
-    string hostname, port;
-    const char *server = vbucket_config_get_server(vb, i);
-    if(!parse_host(server, hostname, port))
-      DIE("strtok(.., \":\") failed to parse %s", server);
-
     bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
     bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
     bufferevent_enable(bev, EV_READ | EV_WRITE);
 
     if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
-                                            hostname.c_str(),
-                                            atoi(port.c_str())))
+                                            h.hostname.c_str(),
+                                            atoi(h.port.c_str())))
       DIE("bufferevent_socket_connect_hostname()");
 
     timer = evtimer_new(base, timer_cb, this);
 
 
-    single_connection conn(hostname, port, bev);
+    single_connection conn(h, bev);
     conns.push_back(conn);
   }
 }
@@ -357,7 +315,7 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
 
   if (events & BEV_EVENT_CONNECTED) {
     conn.connected = true;
-    D("Connected to %s:%s.", conn.hostname.c_str(), conn.port.c_str());
+    D("Connected to %s:%s.", conn.host.hostname.c_str(), conn.host.port.c_str());
     int fd = bufferevent_getfd(bev);
     if (fd < 0) DIE("bufferevent_getfd");
 
@@ -381,7 +339,7 @@ void Connection::event_callback(struct bufferevent *bev, short events) {
     int err = bufferevent_socket_get_dns_error(bev);
     if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
 
-    DIE("BEV_EVENT_ERROR: %s for %s", strerror(errno), conn.hostname.c_str());
+    DIE("BEV_EVENT_ERROR: %s for %s", strerror(errno), conn.host.hostname.c_str());
   } else if (events & BEV_EVENT_EOF) {
     DIE("Unexpected EOF from server.");
   }

@@ -26,21 +26,21 @@ void timer_cb(evutil_socket_t fd, short what, void *ptr);
 
 class Connection {
 public:
-  Connection(struct event_base* _base, struct evdns_base* _evdns,
-             string _hostname, string _port, options_t options,
-             bool sampling = true);
+  struct Host {
+    string hostname;
+    string port;
+  };
 
   Connection(struct event_base* _base, struct evdns_base* _evdns,
-            options_t options, VBUCKET_CONFIG_HANDLE vb,
-            bool sampling = true);
+            options_t options, vector<Connection::Host> hosts,
+            VBUCKET_CONFIG_HANDLE vb, bool sampling = true);
 
   ~Connection();
 
   struct single_connection {
-    single_connection(string hostname, string port, struct bufferevent *bev)
-            : hostname(hostname), port(port), connected(false), bev(bev) {};
-    string hostname;
-    string port;
+    single_connection(Host host, struct bufferevent *bev)
+            : host(host), connected(false), bev(bev) {};
+    Host host;
     bool connected;
     std::queue<Operation> op_queue;
     struct bufferevent *bev;
