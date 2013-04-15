@@ -37,6 +37,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   read_state = INIT_READ;
   write_state = INIT_WRITE;
 
+  last_tx = last_rx = 0.0;
+
   bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
   bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -251,9 +253,24 @@ void Connection::drive_write_machine(double now) {
         write_state = WAITING_FOR_TIME;
         break; // We want to run through the state machine one more time
                // to make sure the timer is armed.
+        //      } else if (options.moderate && options.lambda > 0.0 &&
+        //                 now < last_rx + 0.25 / options.lambda) {
+      } else if (options.moderate && now < last_rx + 0.00025) {
+        write_state = WAITING_FOR_TIME;
+        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+          //          delay = last_rx + 0.25 / options.lambda - now;
+          delay = last_rx + 0.00025 - now;
+          //          I("MODERATE %f %f %f %f %f", now - last_rx, 0.25/options.lambda,
+            //            1/options.lambda, now-last_tx, delay);
+          
+          double_to_tv(delay, &tv);
+          evtimer_add(timer, &tv);
+        }
+        return;
       }
 
       issue_something(now);
+      last_tx = now;
       stats.log_op(op_queue.size());
 
       next_time += iagen->generate();
@@ -262,7 +279,7 @@ void Connection::drive_write_machine(double now) {
           now - next_time > 0.005000 &&
           op_queue.size() >= (size_t) options.depth) {
 
-        while (next_time < now) {
+        while (next_time < now - 0.004000) {
           stats.skips++;
           next_time += iagen->generate();
         }
@@ -367,6 +384,7 @@ void Connection::read_callback() {
 #endif
             stats.log_get(*op);
 
+            last_rx = now;
             pop_op();
             drive_write_machine(now);
             break;
@@ -399,6 +417,7 @@ void Connection::read_callback() {
 
         free(buf);
 
+        last_rx = now;
         pop_op();
         drive_write_machine();
         break;
@@ -453,6 +472,7 @@ void Connection::read_callback() {
 
         free(buf);
 
+        last_rx = now;
         pop_op();
         drive_write_machine(now);
         break;
@@ -484,6 +504,7 @@ void Connection::read_callback() {
       if (!options.binary)
         free(buf);
 
+      last_rx = now;
       pop_op();
       drive_write_machine(now);
       break;

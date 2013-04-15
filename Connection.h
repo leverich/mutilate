@@ -91,7 +91,10 @@ private:
   struct bufferevent *bev;
 
   struct event *timer;  // Used to control inter-transmission time.
-  double lambda, next_time; // Inter-transmission time parameters.
+  //  double lambda;
+  double next_time; // Inter-transmission time parameters.
+  double last_rx; // Used to moderate transmission rate.
+  double last_tx;
 
   int data_length;  // When waiting for data, how much we're peeking for.
 

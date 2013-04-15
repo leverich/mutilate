@@ -124,7 +124,7 @@ class ConnectionStats {
 
   static void print_header() {
     printf("%-7s %7s %7s %7s %7s %7s %7s %7s %7s\n",
-           "#type", "avg", "min", "1st", "5th", "10th",
+           "#type", "avg", "std", "min", /*"1st",*/ "5th", "10th",
            "90th", "95th", "99th");
   }
 
@@ -200,8 +200,8 @@ class ConnectionStats {
     }
 
     printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
-           tag, sampler.average(),
-           sampler.get_nth(0), sampler.get_nth(1), sampler.get_nth(5),
+           tag, sampler.average(), sampler.stddev(),
+           sampler.get_nth(0), /*sampler.get_nth(1),*/ sampler.get_nth(5),
            sampler.get_nth(10), sampler.get_nth(90),
            sampler.get_nth(95), sampler.get_nth(99));
 

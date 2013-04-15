@@ -31,7 +31,7 @@ if not conf.CheckLibWithHeader("pthread", "pthread.h", "C++"):
     Exit(1)
 conf.CheckLib("rt", "clock_gettime", language="C++")
 conf.CheckLibWithHeader("zmq", "zmq.hpp", "C++")
-conf.CheckFunc('clock_gettime')
+# conf.CheckFunc('clock_gettime')
 if not conf.CheckFunc('pthread_barrier_init'):
     conf.env['HAVE_POSIX_BARRIER'] = False
 

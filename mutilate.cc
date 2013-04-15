@@ -157,7 +157,7 @@ void agent() {
   zmq::context_t context(1);
 
   zmq::socket_t socket(context, ZMQ_REP);
-  socket.bind("tcp://*:5555");
+  socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
 
   while (true) {
     zmq::message_t request;
@@ -456,7 +456,8 @@ int main(int argc, char **argv) {
   } else if (args.agent_given) {
     for (unsigned int i = 0; i < args.agent_given; i++) {
       zmq::socket_t *s = new zmq::socket_t(context, ZMQ_REQ);
-      string host = string("tcp://") + string(args.agent_arg[i]) + string(":5555");
+      string host = string("tcp://") + string(args.agent_arg[i]) +
+        string(":") + string(args.agent_port_arg);
       s->connect(host.c_str());
       agent_sockets.push_back(s);
     }
@@ -600,7 +601,8 @@ int main(int argc, char **argv) {
     printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
            (double) stats.get_misses/stats.gets*100);
 
-    printf("Skipped TXs = %" PRIu64 "\n\n", stats.skips);
+    printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
+           (double) stats.skips / total * 100);
 
     printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
            stats.rx_bytes,
@@ -646,6 +648,8 @@ void go(const vector<string>& servers, options_t& options,
     vector<string> ts[options.threads];
 #endif
 
+    int current_cpu = -1;
+
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
 #ifdef HAVE_LIBZMQ
@@ -664,7 +668,32 @@ void go(const vector<string>& servers, options_t& options,
         td[t].servers = &servers;
       }
 
-      if (pthread_create(&pt[t], NULL, thread_main, &td[t]))
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+
+      if (args.affinity_given) {
+        int max_cpus = 8 * sizeof(cpu_set_t);
+        cpu_set_t m;
+        CPU_ZERO(&m);
+        sched_getaffinity(0, sizeof(cpu_set_t), &m);
+
+        for (int i = 0; i < max_cpus; i++) {
+          int c = (current_cpu + i + 1) % max_cpus;
+          if (CPU_ISSET(c, &m)) {
+            CPU_ZERO(&m);
+            CPU_SET(c, &m);
+            int ret;
+            if ((ret = pthread_attr_setaffinity_np(&attr,
+                                                   sizeof(cpu_set_t), &m)))
+              DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+                  c, strerror(ret));
+            current_cpu = c;
+            break;
+          }
+        }
+      }
+
+      if (pthread_create(&pt[t], &attr, thread_main, &td[t]))
         DIE("pthread_create() failed");
     }
 
@@ -728,13 +757,21 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
   struct event_base *base;
   struct evdns_base *evdns;
+  struct event_config *config;
 
-  if ((base = event_base_new()) == NULL) DIE("event_base_new() fail");
+  if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
+
+  if (event_config_set_flag(config, EVENT_BASE_FLAG_PRECISE_TIMER))
+    DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
+
+  if ((base = event_base_new_with_config(config)) == NULL)
+    DIE("event_base_new() fail");
+
   //  evthread_use_pthreads();
 
   if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
 
-  event_base_priority_init(base, 2);
+  //  event_base_priority_init(base, 2);
 
   // FIXME: May want to move this to after all connections established.
   double start = get_time();
@@ -964,6 +1001,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   stats.start = start;
   stats.stop = now;
 
+  event_config_free(config);
   evdns_base_free(evdns, 0);
   event_base_free(base);
 }
@@ -1033,6 +1071,7 @@ void args_to_options(options_t* options) {
   options->warmup = args.warmup_given ? args.warmup_arg : 0;
   options->oob_thread = false;
   options->skip = args.skip_given;
+  options->moderate = args.moderate_given;
 }
 
 void init_random_stuff() {

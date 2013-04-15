@@ -17,6 +17,7 @@ public:
   std::vector<uint64_t> bins;
 
   double sum;
+  double sum_sq;
 
   LogHistogramSampler() = delete;
   LogHistogramSampler(int _bins) : sum(0.0) {
@@ -34,6 +35,7 @@ public:
     size_t bin = log(s)/log(_POW);
 
     sum += s;
+    sum_sq += s*s;
 
     //    I("%f", sum);
 
@@ -49,6 +51,11 @@ public:
   double average() {
     //    I("%f %d", sum, total());
     return sum / total();
+  }
+
+  double stddev() {
+    //    I("%f %d", sum, total());
+    return sqrt(sum_sq / total() - pow(sum / total(), 2.0));
   }
 
   double minimum() {
@@ -89,6 +96,7 @@ public:
     for (size_t i = 0; i < bins.size(); i++) bins[i] += h.bins[i];
 
     sum += h.sum;
+    sum_sq += h.sum_sq;
   }
 };
 

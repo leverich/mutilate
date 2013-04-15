@@ -40,6 +40,8 @@ typedef struct {
   int lambda_denom;
 
   bool oob_thread;
+
+  bool moderate;
 } options_t;
 
 #endif // CONNECTIONOPTIONS_H

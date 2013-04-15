@@ -32,17 +32,20 @@ text "\nAdvanced options:"
 option "username" U "Username to use for SASL authentication." string
 option "password" P "Password to use for SASL authentication." string
 option "threads" T "Number of threads to spawn." int default="1"
+option "affinity" - "Set CPU affinity for threads, round-robin"
 option "connections" c "Connections to establish per server." int default="1"
 option "depth" d "Maximum depth to pipeline requests." int default="1"
 option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
 By default, each thread connects to every server."
 
+option "cork" - "Minimum timer interval, in usecs. (experimental)" int
 option "iadist" i "Inter-arrival distribution (distribution).  Note: \
 The distribution will automatically be adjusted to match the QPS given \
 by --qps." string default="exponential"
 option "skip" S "Skip transmissions if previous requests are late.  This \
 harms the long-term QPS average, but reduces spikes in QPS after \
 long latency requests."
+option "moderate" - "Enforce a minimum delay of ~1/lambda between requests."
 
 option "noload" - "Skip database loading."
 option "loadonly" - "Load database and then exit."
@@ -62,6 +65,7 @@ option "scan" - "Scan latency across QPS rates from min to max."
 text "\nAgent-mode options:"
 option "agentmode" A "Run client in agent mode."
 option "agent" a "Enlist remote agent." string typestr="host" multiple
+option "agent_port" p "Agent port." string default="5556"
 option "lambda_mul" l "Lambda multiplier.  Increases share of \
 QPS for this client." int default="1"
 option "measure_connections" C "Master client connections per server, \
