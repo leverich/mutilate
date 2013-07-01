@@ -38,7 +38,6 @@ option "depth" d "Maximum depth to pipeline requests." int default="1"
 option "roundrobin" R "Assign threads to servers in round-robin fashion.  \
 By default, each thread connects to every server."
 
-option "cork" - "Minimum timer interval, in usecs. (experimental)" int
 option "iadist" i "Inter-arrival distribution (distribution).  Note: \
 The distribution will automatically be adjusted to match the QPS given \
 by --qps." string default="exponential"
@@ -55,6 +54,7 @@ option "no_nodelay" - "Don't use TCP_NODELAY."
 
 option "warmup" w "Warmup time before starting measurement." int
 option "wait" W "Time to wait after startup to start measurement." int
+option "save" - "Record latency samples to given file." string
 
 option "search" - "Search for the QPS where N-order statistic < Xus.  \
 (i.e. --search 95:1000 means find the QPS where 95% of requests are \

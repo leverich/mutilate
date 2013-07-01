@@ -610,6 +610,18 @@ int main(int argc, char **argv) {
     printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
            stats.tx_bytes,
            (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+
+    if (args.save_given) {
+      printf("Saving latency samples to %s.\n", args.save_arg);
+
+      FILE *file;
+      if ((file = fopen(args.save_arg, "w")) == NULL)
+        DIE("--save: failed to open %s: %s", args.save_arg, strerror(errno));
+
+      for (auto i: stats.get_sampler.samples) {
+        fprintf(file, "%f %f\n", i.start_time - boot_time, i.time());
+      }
+    }
   }
 
   //  if (args.threads_arg > 1) 
@@ -963,6 +975,9 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   }
 #endif
 
+  if (master && !args.scan_given && !args.search_given)
+    V("started at %f", get_time());
+
   start = get_time();
   for (Connection *conn: connections) {
     conn->start_time = start;
@@ -991,6 +1006,9 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     if (restart) continue;
     else break;
   }
+
+  if (master && !args.scan_given && !args.search_given)
+    V("stopped at %f  options.time = %d", get_time(), options.time);
 
   // Tear-down and accumulate stats.
   for (Connection *conn: connections) {

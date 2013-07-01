@@ -8,6 +8,7 @@
 
 #include <vector>
 
+#include "mutilate.h"
 #include "Operation.h"
 
 #define _POW 1.1
@@ -15,6 +16,8 @@
 class LogHistogramSampler {
 public:
   std::vector<uint64_t> bins;
+
+  std::vector<Operation> samples;
 
   double sum;
   double sum_sq;
@@ -28,6 +31,7 @@ public:
 
   void sample(const Operation &op) {
     sample(op.time());
+    if (args.save_given) samples.push_back(op);
   }
 
   void sample(double s) {
@@ -97,6 +101,8 @@ public:
 
     sum += h.sum;
     sum_sq += h.sum_sq;
+
+    for (auto i: h.samples) samples.push_back(i);
   }
 };
 
