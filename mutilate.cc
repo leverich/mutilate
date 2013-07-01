@@ -773,8 +773,10 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
   if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
 
+#ifdef HAVE_DECL_EVENT_BASE_FLAG_PRECISE_TIMER
   if (event_config_set_flag(config, EVENT_BASE_FLAG_PRECISE_TIMER))
     DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
+#endif
 
   if ((base = event_base_new_with_config(config)) == NULL)
     DIE("event_base_new() fail");

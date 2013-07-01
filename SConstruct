@@ -5,6 +5,7 @@ import sys
 env = Environment(ENV = os.environ)
 
 env['HAVE_POSIX_BARRIER'] = True
+env['HAVE_EVENT_PRECISE_TIMER'] = False
 
 env.Append(CPPPATH = ['/usr/local/include', '/opt/local/include'])
 env.Append(LIBPATH = ['/opt/local/lib'])
@@ -26,6 +27,8 @@ else: print "found"
 if not conf.CheckLibWithHeader("event", "event2/event.h", "C++"):
     print "libevent required"
     Exit(1)
+if conf.CheckDeclaration("EVENT_BASE_FLAG_PRECISE_TIMER", '#include <event2/event.h>', "C++"):
+    conf.env['HAVE_EVENT_PRECISE_TIMER'] = True
 if not conf.CheckLibWithHeader("pthread", "pthread.h", "C++"):
     print "pthread required"
     Exit(1)
