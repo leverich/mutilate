@@ -81,7 +81,7 @@ void Connection::issue_sasl() {
   string username = string(options.username);
   string password = string(options.password);
 
-  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, 0, 0, 0, 0};
+  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, {0}, 0, 0, 0};
   header.key_len = htons(5);
   header.body_len = htonl(6 + username.length() + 1 + password.length());
 
@@ -124,8 +124,8 @@ void Connection::issue_get(const char* key, double now) {
   if (options.binary) {
     // each line is 4-bytes
     binary_header_t h = {0x80, CMD_GET, htons(keylen),
-                       0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
-                       htonl(keylen) };
+                         0x00, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
+                         htonl(keylen) };
 
     bufferevent_write(bev, &h, 24); // size does not include extras
     bufferevent_write(bev, key, keylen);
@@ -159,8 +159,8 @@ void Connection::issue_set(const char* key, const char* value, int length,
   if (options.binary) {
     // each line is 4-bytes
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
-                        htonl(keylen + 8 + length)};
+                          0x08, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
+                          htonl(keylen + 8 + length)};
 
     bufferevent_write(bev, &h, 32); // With extras
     bufferevent_write(bev, key, keylen);
@@ -347,7 +347,7 @@ void Connection::read_callback() {
   event_base_gettimeofday_cached(base, &now_tv);
 #endif
 
-  char *buf;
+  char *buf = NULL;
   Operation *op = NULL;
   int length;
   size_t n_read_out;
