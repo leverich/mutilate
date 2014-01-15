@@ -1,4 +1,4 @@
-package "mutilate3"
+package "mutilate"
 version "0.1"
 usage "mutilate -s server[:port] [options]"
 description "\"High-performance\" memcached benchmarking tool"
