@@ -23,7 +23,7 @@ public:
   double sum_sq;
 
   LogHistogramSampler() = delete;
-  LogHistogramSampler(int _bins) : sum(0.0) {
+  LogHistogramSampler(int _bins) : sum(0.0), sum_sq(0.0) {
     assert(_bins > 0);
 
     bins.resize(_bins + 1, 0);
