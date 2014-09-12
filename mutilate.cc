@@ -830,8 +830,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     bool restart = false;
     for (Connection *conn: connections)
-      if (conn->read_state != Connection::IDLE)
-        restart = true;
+      if (!conn->is_ready()) restart = true;
 
     if (restart) continue;
     else break;
@@ -851,8 +850,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
       bool restart = false;
       for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
-          restart = true;
+        if (!conn->is_ready()) restart = true;
 
       if (restart) continue;
       else break;
@@ -895,7 +893,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     for (Connection *conn: connections) {
       conn->start_time = start;
       conn->options.time = options.warmup;
-      conn->drive_write_machine(); // Kick the Connection into motion.
+      conn->start(); // Kick the Connection into motion.
     }
 
     while (1) {
@@ -920,8 +918,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     bool restart = false;
     for (Connection *conn: connections)
-      if (conn->read_state != Connection::IDLE)
-        restart = true;
+      if (!conn->is_ready()) restart = true;
 
     if (restart) {
 
@@ -935,18 +932,15 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
       bool restart = false;
       for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
-          restart = true;
+        if (!conn->is_ready()) restart = true;
 
       if (restart) continue;
       else break;
     }
     }
 
-    //    options.time = old_time;
     for (Connection *conn: connections) {
       conn->reset();
-      //      conn->stats = ConnectionStats();
       conn->options.time = old_time;
     }
 
@@ -983,7 +977,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   start = get_time();
   for (Connection *conn: connections) {
     conn->start_time = start;
-    conn->drive_write_machine(); // Kick the Connection into motion.
+    conn->start(); // Kick the Connection into motion.
   }
 
   //  V("Start = %f", start);
@@ -1096,18 +1090,7 @@ void args_to_options(options_t* options) {
 
 void init_random_stuff() {
   static char lorem[] =
-    R"(Lorem ipsum dolor sit amet, consectetur adipiscing elit. Maecenas
-turpis dui, suscipit non vehicula non, malesuada id sem. Phasellus
-suscipit nisl ut dui consectetur ultrices tincidunt eros
-aliquet. Donec feugiat lectus sed nibh ultrices ultrices. Vestibulum
-ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia
-Curae; Mauris suscipit eros sed justo lobortis at ultrices lacus
-molestie. Duis in diam mi. Cum sociis natoque penatibus et magnis dis
-parturient montes, nascetur ridiculus mus. Ut cursus viverra
-sagittis. Vivamus non facilisis tortor. Integer lectus arcu, sagittis
-et eleifend rutrum, condimentum eget sem. Vestibulum tempus tellus non
-risus semper semper. Morbi molestie rhoncus mi, in egestas dui
-facilisis et.)";
+    R"(Lorem ipsum dolor sit amet, consectetur adipiscing elit. Maecenas turpis dui, suscipit non vehicula non, malesuada id sem. Phasellus suscipit nisl ut dui consectetur ultrices tincidunt eros aliquet. Donec feugiat lectus sed nibh ultrices ultrices. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia Curae; Mauris suscipit eros sed justo lobortis at ultrices lacus molestie. Duis in diam mi. Cum sociis natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus. Ut cursus viverra sagittis. Vivamus non facilisis tortor. Integer lectus arcu, sagittis et eleifend rutrum, condimentum eget sem. Vestibulum tempus tellus non risus semper semper. Morbi molestie rhoncus mi, in egestas dui facilisis et.)";
 
   size_t cursor = 0;
 
