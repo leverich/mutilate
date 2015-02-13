@@ -1,0 +1,6 @@
+language: cpp
+script: scons
+before_install:
+  - travis_retry sudo apt-get update -qq
+install:
+  - travis_retry sudo apt-get install gengetopt libzmq-dev libevent-dev scons

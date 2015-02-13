@@ -1,4 +1,4 @@
-Mutilate
+Mutilate [![Build Status](https://img.shields.io/travis/dterei/mutilate.svg?style=flat)](https://travis-ci.org/dterei/mutilate)
 ========
 
 Mutilate is a memcached load generator designed for high request
