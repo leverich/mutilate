@@ -160,7 +160,7 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len) {
   bufferevent_write(bev, &h, 32); // With extras
   bufferevent_write(bev, key, keylen);
   bufferevent_write(bev, value, len);
-  return 24 + h.body_len;
+  return 24 + ntohl(h.body_len);
 }
 
 /**
