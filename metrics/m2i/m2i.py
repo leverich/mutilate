@@ -144,16 +144,18 @@ def extract_rps(raw_stats):
     return requests_per_second
 
 def post_to_influxdb(rps):
-    global influxdb_endpoint
+    global influxdb_endpoint, memcached_host, memcached_port
+
+    memcached_instance = "{}:{}".format(memcached_host, memcached_port)
 
     print "Posting metrics to influxdb"
     samples = []
 
     rps_sample = {
         "name": "memcached_rps",
-        "columns": [ "value" ],
+        "columns": [ "value", "memcached_instance" ],
         "points": [
-            [rps]
+            [rps, memcached_instance]
         ]
     }
 

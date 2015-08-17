@@ -48,9 +48,12 @@ Posting metrics to influxdb
 
 ## Querying data from InfluxDB
 
-Simplest example:
+Simple example:
 
 ```sql
-SELECT value from memcached_rps;
+SELECT value from memcached_rps
+  WHERE time > now() - 10m
+    AND "memcached_instance"='localhost:11211'
+  LIMIT 25;
 ```
 
