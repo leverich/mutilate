@@ -48,6 +48,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   if (options.binary) {
     prot = new ProtocolBinary(options, this, bev);
+  } else if (options.redis) {
+    prot = new ProtocolRESP(options, this, bev);
   } else {
     prot = new ProtocolAscii(options, this, bev);
   }

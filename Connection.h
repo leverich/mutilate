@@ -114,11 +114,15 @@ private:
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);
   int set_request_binary(const char* key, const char* value, int length);
+  int set_request_resp(const char* key, const char* value, int length);
+  
   int get_request_ascii(const char* key);
   int get_request_binary(const char* key);
+  int get_request_resp(const char* key);
 
   bool consume_binary_response(evbuffer *input);
   bool consume_ascii_line(evbuffer *input, bool &done);
+  bool consume_resp_line(evbuffer *input, bool &done);
 };
 
 #endif

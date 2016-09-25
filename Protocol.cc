@@ -20,6 +20,109 @@
 #define unlikely(x) __builtin_expect((x),0)
 
 /**
+ *
+ * First we build a RESP Array:
+ *  1. * character as the first byte 
+ *  2.  the number of elements in the array as a decimal number
+ *  3.  CRLF
+ *  4. The actual RESP element we are putting into the array
+ *
+ * All Redis commands are sent as arrays of bulk strings. 
+ * For example, the command “SET mykey ‘my value’” would be written and sent as:
+ * *3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$8\r\nmy value\r\n
+ *
+ * Then package command as a RESP Bulk String to the server
+ *
+ * Bulk String is the defined by the following:
+ *     1."$" byte followed by the number of bytes composing the 
+ *        string (a prefixed length), terminated by CRLF.
+ *     2. The actual string data.
+ *     3. A final CRLF.
+ *
+ */
+int ProtocolRESP::set_request(const char* key, const char* value, int value_len) {
+  
+  int l;
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                          "*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 
+                          strlen(key),key,strlen(value),value);
+  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+  return l;
+
+  //size_t req_size = strlen("*3$$$") + 7*strlen("\r\n") + strlen(key) + strlen(value);
+
+  //char *req = (char*)malloc(req_size*(sizeof(char)));
+  //snprintf(req,req_size,"*%d\r\n$%dSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+  //              3,3,strlen(key),key,strlen(value),value);
+  //
+  //bufferevent_write(bev, req, req_size);
+  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+  //return req_size;
+}
+
+/**
+ * Send a RESP get request.
+ */
+int ProtocolRESP::get_request(const char* key) {
+  int l;
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                          "*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n",strlen(key),key);
+  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+  return l;
+}
+
+/**
+ * Handle a RESP response.
+ *
+ * In RESP, the type of data depends on the first byte:
+ * 
+ * Simple Strings the first byte of the reply is "+"
+ * Errors the first byte of the reply is "-"
+ * Integers the first byte of the reply is ":"
+ * Bulk Strings the first byte of the reply is "$"
+ * Arrays the first byte of the reply is "*"
+ *
+ * Right now we are only implementing GET response
+ * so the RESP type will be bulk string.
+ *
+ *
+ */
+bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
+  char *resp = NULL;
+  char *resp_bytes = NULL;
+  size_t n_read_out; //first read number of bytes
+  size_t m_read_out; //second read number of bytes
+
+  //A bulk string resp: "$6\r\nfoobar\r\n"
+  //1. Consume the first "$##\r\n", evbuffer_readln returns
+  //   "$##", where ## is the number of bytes in the bulk string
+  resp_bytes = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+  resp_bytes++; //consume the "$"
+
+  //2. Consume the next "foobar"
+  resp = evbuffer_readln(input,&m_read_out,EVBUFFER_EOL_CRLF_STRICT);
+  
+  //make sure we got a results
+  if (resp == NULL || resp_bytes == NULL) return false;
+
+  //keep track of recieved stats
+  conn->stats.rx_bytes += n_read_out + m_read_out;
+
+  //if nil we have a miss, keep waiting? (check if this is correct action)
+  if (strncmp(resp, "nil", 3) {
+    conn->stats.get_misses++;
+    done = true;
+  } else {
+    //we have a proper respsone
+    done = true;
+  }
+  evbuffer_drain(input,n_read_out + m_read_out + 4) //4 = 2*(CRLF bytes) 
+  free(resp);
+  free(resp_bytes);
+  return true;
+}
+
+/**
  * Send an ascii get request.
  */
 int ProtocolAscii::get_request(const char* key) {
@@ -145,6 +248,8 @@ int ProtocolBinary::get_request(const char* key) {
   bufferevent_write(bev, key, keylen);
   return 24 + keylen;
 }
+
+
 
 /**
  * Send a binary set request.
