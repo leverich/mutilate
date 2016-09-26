@@ -46,18 +46,9 @@ int ProtocolRESP::set_request(const char* key, const char* value, int value_len)
   l = evbuffer_add_printf(bufferevent_get_output(bev),
                           "*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 
                           strlen(key),key,strlen(value),value);
-  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+  if (read_state == IDLE) read_state = WAITING_FOR_END;
   return l;
 
-  //size_t req_size = strlen("*3$$$") + 7*strlen("\r\n") + strlen(key) + strlen(value);
-
-  //char *req = (char*)malloc(req_size*(sizeof(char)));
-  //snprintf(req,req_size,"*%d\r\n$%dSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
-  //              3,3,strlen(key),key,strlen(value),value);
-  //
-  //bufferevent_write(bev, req, req_size);
-  //if (read_state == IDLE) read_state = WAITING_FOR_END;
-  //return req_size;
 }
 
 /**
@@ -67,7 +58,8 @@ int ProtocolRESP::get_request(const char* key) {
   int l;
   l = evbuffer_add_printf(bufferevent_get_output(bev),
                           "*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n",strlen(key),key);
-  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+
+  if (read_state == IDLE) read_state = WAITING_FOR_GET;
   return l;
 }
 
@@ -88,38 +80,56 @@ int ProtocolRESP::get_request(const char* key) {
  *
  */
 bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
-  char *resp = NULL;
-  char *resp_bytes = NULL;
-  size_t n_read_out; //first read number of bytes
-  size_t m_read_out; //second read number of bytes
+  char *buf = NULL;
+  int len;
+  size_t n_read_out;
 
-  //A bulk string resp: "$6\r\nfoobar\r\n"
-  //1. Consume the first "$##\r\n", evbuffer_readln returns
-  //   "$##", where ## is the number of bytes in the bulk string
-  resp_bytes = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-  resp_bytes++; //consume the "$"
+  switch (read_state) {
 
-  //2. Consume the next "foobar"
-  resp = evbuffer_readln(input,&m_read_out,EVBUFFER_EOL_CRLF_STRICT);
-  
-  //make sure we got a results
-  if (resp == NULL || resp_bytes == NULL) return false;
+  case WAITING_FOR_GET:
+  case WAITING_FOR_END:
+    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+    if (buf == NULL) return false;
 
-  //keep track of recieved stats
-  conn->stats.rx_bytes += n_read_out + m_read_out;
+    conn->stats.rx_bytes += n_read_out + 2; //don't forget CRLF
 
-  //if nil we have a miss, keep waiting? (check if this is correct action)
-  if (strncmp(resp, "nil", 3) {
-    conn->stats.get_misses++;
-    done = true;
-  } else {
-    //we have a proper respsone
-    done = true;
+    //this is checking if we have gotten the "END" data message 
+    //in memcached it is simply END, but in redis everything
+    //is sent as a bulk string, so we check for a $
+    if (buf[0] != '$') {
+      //if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
+      read_state = WAITING_FOR_GET;
+      done = true;
+      free(buf);
+    }
+    else {   
+      //A bulk string resp: "$6\r\nfoobar\r\n"
+      //1. Consume the first "$##\r\n", evbuffer_readln returns
+      //   "$##", where ## is the number of bytes in the bulk string
+      sscanf(buf, "$%d", &len);
+      data_length = len;
+      free(buf);
+
+      //2. Consume the next "foobar"
+      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+      conn->stats.rx_bytes += n_read_out + 2;  //don't forget CRLF
+      
+      //check if it was nil => miss
+      if (!strncmp(buf,"nil",3)) {
+        if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
+        read_state = WAITING_FOR_GET;
+        done = true;
+      }
+      free(buf); 
+      done = true;
+    }
+    return true;
+
+
+  default: printf("state: %d\n", read_state); DIE("Unimplemented!");
   }
-  evbuffer_drain(input,n_read_out + m_read_out + 4) //4 = 2*(CRLF bytes) 
-  free(resp);
-  free(resp_bytes);
-  return true;
+
+  DIE("Shouldn't ever reach here...");
 }
 
 /**
