@@ -44,7 +44,7 @@ int ProtocolRESP::set_request(const char* key, const char* value, int value_len)
   
   int l;
   l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*3\r\n$3\r\nSET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 
+                          "*3\r\n$3\r\nSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n", 
                           strlen(key),key,strlen(value),value);
   if (read_state == IDLE) read_state = WAITING_FOR_END;
   return l;
@@ -57,7 +57,7 @@ int ProtocolRESP::set_request(const char* key, const char* value, int value_len)
 int ProtocolRESP::get_request(const char* key) {
   int l;
   l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*2\r\n$3\r\nGET\r\n$%d\r\n%s\r\n",strlen(key),key);
+                          "*2\r\n$3\r\nGET\r\n$%lu\r\n%s\r\n",strlen(key),key);
 
   if (read_state == IDLE) read_state = WAITING_FOR_GET;
   return l;
@@ -99,8 +99,8 @@ bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
     if (buf[0] != '$') {
       //if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
       read_state = WAITING_FOR_GET;
-      done = true;
       free(buf);
+      done = true;
     }
     else {   
       //A bulk string resp: "$6\r\nfoobar\r\n"
@@ -108,20 +108,24 @@ bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
       //   "$##", where ## is the number of bytes in the bulk string
       sscanf(buf, "$%d", &len);
       data_length = len;
-      free(buf);
-
-      //2. Consume the next "foobar"
-      buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-      conn->stats.rx_bytes += n_read_out + 2;  //don't forget CRLF
-      
-      //check if it was nil => miss
-      if (!strncmp(buf,"nil",3)) {
+      //null response => miss
+      if (data_length == -1) {
         if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
         read_state = WAITING_FOR_GET;
         done = true;
+        free(buf);
       }
-      free(buf); 
-      done = true;
+      else
+      {
+        free(buf);
+
+        //2. Consume the next "foobar"
+        buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+        conn->stats.rx_bytes += n_read_out + 2;  //don't forget CRLF
+        
+        free(buf); 
+        done = true;
+      }
     }
     return true;
 
