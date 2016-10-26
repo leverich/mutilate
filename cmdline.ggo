@@ -14,6 +14,9 @@ option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
 option "binary" - "Use binary memcached protocol instead of ASCII."
 option "redis"  - "Use Redis RESP protocol instead of memchached."
+option "getset" - "Use getset mode, in getset mode we first issue \
+a GET and if the response is MISS, then issue a SET for on that
+key following distribution value."
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 

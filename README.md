@@ -133,6 +133,10 @@ Command-line Options
                                       specify multiple servers.
           --binary                  Use binary memcached protocol instead of ASCII.
           --redis                   Use Redis RESP protocol instead of memchached.
+          --getset                  Use getset mode, in getset mode we first issue
+                                      a GET and if the response is MISS, then issue
+                                      a SET for on that
+                                      key following distribution value.
       -q, --qps=INT                 Target aggregate QPS. 0 = peak QPS.
                                       (default=`0')
       -t, --time=INT                Maximum time to run (seconds).  (default=`5')

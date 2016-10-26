@@ -103,6 +103,7 @@ private:
   void pop_op();
   void finish_op(Operation *op);
   void issue_something(double now = 0.0);
+  void issue_getset(double now = 0.0);
   void drive_write_machine(double now = 0.0);
 
   // request functions

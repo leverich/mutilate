@@ -1060,6 +1060,10 @@ void args_to_options(options_t* options) {
 
   options->binary = args.binary_given;
   options->redis = args.redis_given;
+
+  //getset mode (first issue get, then set same key if miss)
+  options->getset = args.getset_given;
+
   options->sasl = args.username_given;
   
   if (args.password_given)

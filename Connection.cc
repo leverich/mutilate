@@ -134,6 +134,23 @@ void Connection::issue_something(double now) {
   }
 }
 
+
+/**
+ * Get/Set Style
+ * Issue a get first, if not found then set
+ */
+void Connection::issue_getset(double now) {
+  char key[256];
+  // FIXME: generate key distribution here!
+  string keystr = keygen->generate(lrand48() % options.records);
+  strcpy(key, keystr.c_str());
+
+  //true if success, false if not found in db
+  issue_get(key, now);
+
+}
+
+
 /**
  * Issue a get request to the server.
  */
@@ -325,7 +342,11 @@ void Connection::drive_write_machine(double now) {
         return;
       }
 
-      issue_something(now);
+      if (options.getset)
+        issue_getset(now);
+      else
+        issue_something(now);
+      
       last_tx = now;
       stats.log_op(op_queue.size());
       next_time += iagen->generate();
@@ -370,7 +391,10 @@ void Connection::read_callback() {
   struct evbuffer *input = bufferevent_get_input(bev);
 
   Operation *op = NULL;
-  bool done, full_read;
+  bool done, found, full_read;
+
+  //initially assume found (for sets that may come through here)
+  found = true;
 
   if (op_queue.size() == 0) V("Spurious read callback.");
 
@@ -383,23 +407,36 @@ void Connection::read_callback() {
 
     case WAITING_FOR_GET:
       assert(op_queue.size() > 0);
-      full_read = prot->handle_response(input, done);
+      full_read = prot->handle_response(input, done, found);
+
       if (!full_read) {
         return;
       } else if (done) {
+        
+         //if not found and in getset mode, issue set
+        if (!found && options.getset)
+        {
+            char key[256];
+            string keystr = op->key;
+            strcpy(key, keystr.c_str());
+            int index = lrand48() % (1024 * 1024);
+            issue_set(key, &random_char[index], valuesize->generate());
+        }
+        
         finish_op(op); // sets read_state = IDLE
+
       }
       break;
 
     case WAITING_FOR_SET:
       assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done)) return;
+      if (!prot->handle_response(input, done, found)) return;
       finish_op(op);
       break;
 
     case LOADING:
       assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done)) return;
+      if (!prot->handle_response(input, done, found)) return;
       loader_completed++;
       pop_op();
 

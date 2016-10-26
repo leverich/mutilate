@@ -79,7 +79,7 @@ int ProtocolRESP::get_request(const char* key) {
  *
  *
  */
-bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
+bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found) {
   char *buf = NULL;
   int len;
   size_t n_read_out;
@@ -110,7 +110,10 @@ bool ProtocolRESP::handle_response(evbuffer *input, bool &done) {
       data_length = len;
       //null response => miss
       if (data_length == -1) {
-        if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
+        if (read_state == WAITING_FOR_GET) {
+          conn->stats.get_misses++;
+          found = false;
+        }
         read_state = WAITING_FOR_GET;
         done = true;
         free(buf);
@@ -164,7 +167,7 @@ int ProtocolAscii::set_request(const char* key, const char* value, int len) {
 /**
  * Handle an ascii response.
  */
-bool ProtocolAscii::handle_response(evbuffer *input, bool &done) {
+bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found) {
   char *buf = NULL;
   int len;
   size_t n_read_out;
@@ -179,7 +182,10 @@ bool ProtocolAscii::handle_response(evbuffer *input, bool &done) {
     conn->stats.rx_bytes += n_read_out;
 
     if (!strncmp(buf, "END", 3)) {
-      if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
+      if (read_state == WAITING_FOR_GET) {
+          conn->stats.get_misses++;
+          found = false;
+      }
       read_state = WAITING_FOR_GET;
       done = true;
     } else if (!strncmp(buf, "VALUE", 5)) {
@@ -243,8 +249,8 @@ bool ProtocolBinary::setup_connection_w() {
 bool ProtocolBinary::setup_connection_r(evbuffer* input) {
   if (!opts.sasl) return true;
 
-  bool b;
-  return handle_response(input, b);
+  bool b,c;
+  return handle_response(input, b, c);
 }
 
 /**
@@ -288,7 +294,7 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len) {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-bool ProtocolBinary::handle_response(evbuffer *input, bool &done) {
+bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -303,6 +309,7 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done) {
   // If something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       conn->stats.get_misses++;
+      found = true;
   }
 
   if (unlikely(h->opcode == CMD_SASL)) {

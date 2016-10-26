@@ -12,6 +12,7 @@ typedef struct {
 
   bool binary;
   bool redis;
+  bool getset;
   bool sasl;
   char username[32];
   char password[32];
