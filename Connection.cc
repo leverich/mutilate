@@ -15,6 +15,8 @@
 #include "mutilate.h"
 #include "binary_protocol.h"
 #include "util.h"
+#include <fstream>
+#include <sstream>
 
 /**
  * Create a new connection to a server endpoint.
@@ -27,7 +29,10 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
+  
   keygen = new KeyGenerator(keysize, options.records);
+  if (options.read_file && options.getset)
+    kvfile.open(options.file_name);
 
   if (options.lambda <= 0) {
     iagen = createGenerator("0");
@@ -140,13 +145,35 @@ void Connection::issue_something(double now) {
  * Issue a get first, if not found then set
  */
 void Connection::issue_getset(double now) {
-  char key[256];
   // FIXME: generate key distribution here!
-  string keystr = keygen->generate(lrand48() % options.records);
-  strcpy(key, keystr.c_str());
+  if (!options.read_file && !kvfile.is_open())
+  {
+    string keystr;
+    char key[256];
+    keystr = keygen->generate(lrand48() % options.records);
+    strcpy(key, keystr.c_str());
+    
+    issue_get(key, now);
+  }
+  else
+  {
+    string line;
+    string rKey;
+    string rvaluelen;
+    getline(kvfile,line);
+    stringstream ss(line);
+    getline( ss, rKey, ',' );
+    getline( ss, rvaluelen, ',' );
+   
 
-  //true if success, false if not found in db
-  issue_get(key, now);
+    //save valuelen
+    key_len[rKey] = rvaluelen;
+
+    char key[256];
+    strcpy(key, rKey.c_str());
+    issue_get(key, now);
+  }
+
 
 }
 
@@ -255,6 +282,22 @@ void Connection::finish_op(Operation *op) {
 
   last_rx = now;
   pop_op();
+
+  //lets check if we should output stats for the window
+  //Do the binning for percentile outputs
+  //crude at start
+  if ((options.misswindow != 0) && ( ((stats.window_gets) % options.misswindow) == 0))
+  {
+      if (stats.window_gets != 0)
+      {
+        printf("%lu,%.2f\n",(stats.gets),
+                ((double)stats.window_get_misses/(double)stats.window_gets));
+        stats.window_gets = 0;
+        stats.window_get_misses = 0;
+        stats.window_sets = 0;
+      }
+  }
+
   drive_write_machine();
 }
 
@@ -414,13 +457,32 @@ void Connection::read_callback() {
       } else if (done) {
         
          //if not found and in getset mode, issue set
-        if (!found && options.getset)
+        if (!found && options.getset && options.read_file)
+        {
+            char key[256];
+            char vlen[256];
+            string valuelen;
+
+            string keystr = op->key;
+            strcpy(key, keystr.c_str());
+
+            int index = lrand48() % (1024 * 1024);
+
+            valuelen = key_len[keystr];
+            strcpy(vlen, valuelen.c_str());
+            int vl = atoi(vlen);
+            issue_set(key, &random_char[index], vl);
+            found = true;
+        }
+        else if (!found && options.getset)
         {
             char key[256];
             string keystr = op->key;
             strcpy(key, keystr.c_str());
             int index = lrand48() % (1024 * 1024);
+
             issue_set(key, &random_char[index], valuesize->generate());
+            found = true;
         }
         
         finish_op(op); // sets read_state = IDLE

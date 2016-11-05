@@ -9,7 +9,11 @@ typedef struct {
   double lambda;
   int qps;
   int records;
-
+  int misswindow;
+  int queries;
+    
+  char file_name[256];
+  bool read_file;
   bool binary;
   bool redis;
   bool getset;
@@ -17,6 +21,7 @@ typedef struct {
   char username[32];
   char password[32];
 
+  char hashtype[256];
   char keysize[32];
   char valuesize[32];
   // int keysize;

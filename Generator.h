@@ -197,8 +197,8 @@ public:
     double U = (double) h / ULLONG_MAX;
     double G = g->generate(U);
     int keylen = MAX(round(G), floor(log10(max)) + 1);
-    char key[256];
-    snprintf(key, 256, "%0*" PRIu64, keylen, ind);
+    char key[250]; //memcached limit of 255 chars
+    snprintf(key, 250, "%0*" PRIu64, keylen, ind);
 
     //    D("%d = %s", ind, key);
     return std::string(key);

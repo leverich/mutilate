@@ -4,6 +4,8 @@
 
 #include <queue>
 #include <string>
+#include <fstream>
+#include <map>
 
 #include <event2/bufferevent.h>
 #include <event2/dns.h>
@@ -17,6 +19,7 @@
 #include "Generator.h"
 #include "Operation.h"
 #include "util.h"
+
 
 #include "Protocol.h"
 
@@ -89,6 +92,9 @@ private:
   read_state_enum read_state;
   write_state_enum write_state;
 
+  //need to keep value length for read key
+  map<string,string> key_len;
+  ifstream kvfile;
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
 

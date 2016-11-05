@@ -20,6 +20,8 @@ key following distribution value."
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 
+option "read_file"  - "Read keys from file." string default=""
+
 option "keysize" K "Length of memcached keys (distribution)."
        string default="30"
 option "valuesize" V "Length of memcached values (distribution)."
@@ -28,6 +30,14 @@ option "valuesize" V "Length of memcached values (distribution)."
 option "records" r "Number of memcached records to use.  \
 If multiple memcached servers are given, this number is divided \
 by the number of servers." int default="10000"
+
+option "misswindow" m  "Window for recording misses, used to find \
+                       steady state, no window by default, which \
+                       gives us summary stats in total" int default="0"
+
+option "queries" N "Number of queries to make. 0 is unlimited (default)  \
+If multiple memcached servers are given, this number is divided \
+by the number of servers." int default="0"
 
 option "update" u "Ratio of set:get commands." float default="0.0"
 

@@ -29,7 +29,8 @@ class ConnectionStats {
    get_sampler(200), set_sampler(200), op_sampler(100),
 #endif
    rx_bytes(0), tx_bytes(0), gets(0), sets(0),
-   get_misses(0), skips(0), sampling(_sampling) {}
+   get_misses(0), window_gets(0), window_sets(0), 
+   window_get_misses(0), skips(0), sampling(_sampling) {}
 
 #ifdef USE_ADAPTIVE_SAMPLER
   AdaptiveSampler<Operation> get_sampler;
@@ -47,14 +48,15 @@ class ConnectionStats {
 
   uint64_t rx_bytes, tx_bytes;
   uint64_t gets, sets, get_misses;
+  uint64_t window_gets, window_sets, window_get_misses;
   uint64_t skips;
 
   double start, stop;
 
   bool sampling;
 
-  void log_get(Operation& op) { if (sampling) get_sampler.sample(op); gets++; }
-  void log_set(Operation& op) { if (sampling) set_sampler.sample(op); sets++; }
+  void log_get(Operation& op) { if (sampling) get_sampler.sample(op); window_gets++; gets++; }
+  void log_set(Operation& op) { if (sampling) set_sampler.sample(op); window_sets++; sets++; }
   void log_op (double op)     { if (sampling)  op_sampler.sample(op); }
 
   double get_qps() {

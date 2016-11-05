@@ -1058,8 +1058,16 @@ void args_to_options(options_t* options) {
   //  else
   options->records = args.records_arg / options->server_given;
 
+  options->queries = args.queries_arg / options->server_given;
+  
+  options->misswindow = args.misswindow_arg;
+  
   options->binary = args.binary_given;
   options->redis = args.redis_given;
+  
+  options->read_file = args.read_file_given;
+  if (args.read_file_given)
+    strcpy(options->file_name, args.read_file_arg);
 
   //getset mode (first issue get, then set same key if miss)
   options->getset = args.getset_given;

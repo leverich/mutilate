@@ -140,6 +140,7 @@ Command-line Options
       -q, --qps=INT                 Target aggregate QPS. 0 = peak QPS.
                                       (default=`0')
       -t, --time=INT                Maximum time to run (seconds).  (default=`5')
+          --read_file=STRING        Read keys from file.  (default=`')
       -K, --keysize=STRING          Length of memcached keys (distribution).
                                       (default=`30')
       -V, --valuesize=STRING        Length of memcached values (distribution).
@@ -148,6 +149,14 @@ Command-line Options
                                       multiple memcached servers are given, this
                                       number is divided by the number of servers.
                                       (default=`10000')
+      -m, --misswindow=INT          Window for recording misses, used to find
+                                      steady state, no window by default, which
+                                      gives us summary stats in total
+                                      (default=`0')
+      -N, --queries=INT             Number of queries to make. 0 is unlimited
+                                      (default)  If multiple memcached servers are
+                                      given, this number is divided by the number
+                                      of servers.  (default=`0')
       -u, --update=FLOAT            Ratio of set:get commands.  (default=`0.0')
     
     Advanced options:
