@@ -1061,10 +1061,16 @@ void args_to_options(options_t* options) {
   options->queries = args.queries_arg / options->server_given;
   
   options->misswindow = args.misswindow_arg;
-  
+
+  options->use_assoc = args.assoc_given;
+  options->assoc = args.assoc_arg;
+
   options->binary = args.binary_given;
   options->redis = args.redis_given;
-  
+ 
+  if (options->use_assoc && !options->redis)
+        DIE("assoc must be used with redis");
+
   options->read_file = args.read_file_given;
   if (args.read_file_given)
     strcpy(options->file_name, args.read_file_arg);

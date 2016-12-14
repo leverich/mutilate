@@ -98,6 +98,10 @@ private:
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
 
+  //was the last op a miss
+  char last_key[256];
+  int last_miss;
+
   Protocol *prot;
   Generator *valuesize;
   Generator *keysize;

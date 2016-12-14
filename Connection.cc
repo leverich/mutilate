@@ -47,6 +47,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   last_tx = last_rx = 0.0;
 
+  last_miss = 0;
+
   bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
   bufferevent_enable(bev, EV_READ | EV_WRITE);
@@ -145,33 +147,68 @@ void Connection::issue_something(double now) {
  * Issue a get first, if not found then set
  */
 void Connection::issue_getset(double now) {
-  // FIXME: generate key distribution here!
-  if (!options.read_file && !kvfile.is_open())
+
+  //if the last request was miss we need to issue a set
+  if (last_miss)
   {
-    string keystr;
-    char key[256];
-    keystr = keygen->generate(lrand48() % options.records);
-    strcpy(key, keystr.c_str());
-    
-    issue_get(key, now);
+    //if not found and in getset mode, issue set
+    if (options.read_file)
+    {
+        char key[256];
+        char vlen[256];
+        string valuelen;
+
+        string keystr = string(last_key);
+        strcpy(key, keystr.c_str());
+        
+        int index = lrand48() % (1024 * 1024);
+        valuelen = key_len[keystr];
+        strcpy(vlen, valuelen.c_str());
+        int vl = atoi(vlen);
+
+        issue_set(key, &random_char[index], vl);
+    }
+    else 
+    {
+        char key[256];
+        string keystr = string(last_key);
+        strcpy(key, keystr.c_str());
+
+        int index = lrand48() % (1024 * 1024);
+
+        issue_set(key, &random_char[index], valuesize->generate());
+    }
+    last_miss = 0;
   }
   else
   {
-    string line;
-    string rKey;
-    string rvaluelen;
-    getline(kvfile,line);
-    stringstream ss(line);
-    getline( ss, rKey, ',' );
-    getline( ss, rvaluelen, ',' );
-   
+    if (!options.read_file && !kvfile.is_open())
+    {
+      string keystr;
+      char key[256];
+      keystr = keygen->generate(lrand48() % options.records);
+      strcpy(key, keystr.c_str());
+      
+      issue_get(key, now);
+    }
+    else
+    {
+      string line;
+      string rKey;
+      string rvaluelen;
+      getline(kvfile,line);
+      stringstream ss(line);
+      getline( ss, rKey, ',' );
+      getline( ss, rvaluelen, ',' );
+     
 
-    //save valuelen
-    key_len[rKey] = rvaluelen;
+      //save valuelen
+      key_len[rKey] = rvaluelen;
 
-    char key[256];
-    strcpy(key, rKey.c_str());
-    issue_get(key, now);
+      char key[256];
+      strcpy(key, rKey.c_str());
+      issue_get(key, now);
+    }
   }
 
 
@@ -290,7 +327,7 @@ void Connection::finish_op(Operation *op) {
   {
       if (stats.window_gets != 0)
       {
-        printf("%lu,%.2f\n",(stats.gets),
+        printf("%lu,%.4f\n",(stats.gets),
                 ((double)stats.window_get_misses/(double)stats.window_gets));
         stats.window_gets = 0;
         stats.window_get_misses = 0;
@@ -301,14 +338,24 @@ void Connection::finish_op(Operation *op) {
   drive_write_machine();
 }
 
+
 /**
  * Check if our testing is done and we should exit.
  */
 bool Connection::check_exit_condition(double now) {
   if (read_state == INIT_READ) return false;
   if (now == 0.0) now = get_time();
-  if (now > start_time + options.time) return true;
+  if ((options.queries == 0) && 
+      (now > start_time + options.time))
+  {
+      return true;
+  }
   if (options.loadonly && read_state == IDLE) return true;
+  if (options.queries != 0 && 
+     (((long unsigned)options.queries) == stats.gets)) 
+  {
+      return true;
+  }
   return false;
 }
 
@@ -456,41 +503,25 @@ void Connection::read_callback() {
         return;
       } else if (done) {
         
-         //if not found and in getset mode, issue set
-        if (!found && options.getset && options.read_file)
+        if (!found && options.getset && stats.gets >= 1)
         {
-            char key[256];
-            char vlen[256];
-            string valuelen;
-
             string keystr = op->key;
-            strcpy(key, keystr.c_str());
-
-            int index = lrand48() % (1024 * 1024);
-
-            valuelen = key_len[keystr];
-            strcpy(vlen, valuelen.c_str());
-            int vl = atoi(vlen);
-            issue_set(key, &random_char[index], vl);
-            found = true;
+            strcpy(last_key, keystr.c_str());
+            last_miss = 1;
         }
-        else if (!found && options.getset)
+        else if (options.getset)
         {
-            char key[256];
             string keystr = op->key;
-            strcpy(key, keystr.c_str());
-            int index = lrand48() % (1024 * 1024);
-
-            issue_set(key, &random_char[index], valuesize->generate());
-            found = true;
+            strcpy(last_key, keystr.c_str());
+            last_miss = 0;
         }
-        
         finish_op(op); // sets read_state = IDLE
 
       }
       break;
 
     case WAITING_FOR_SET:
+      
       assert(op_queue.size() > 0);
       if (!prot->handle_response(input, done, found)) return;
       finish_op(op);

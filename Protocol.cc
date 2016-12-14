@@ -39,15 +39,39 @@
  *     2. The actual string data.
  *     3. A final CRLF.
  *
+ * DBG code
+ *   fprintf(stderr,"--\n");
+ *   fprintf(stderr,"*3\r\n$3\r\nSET\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n", 
+ *                           strlen(key),key,len,val);
+ *   fprintf(stderr,"--\n");
+ *
  */
-int ProtocolRESP::set_request(const char* key, const char* value, int value_len) {
-  
-  int l;
-  l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*3\r\n$3\r\nSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n", 
-                          strlen(key),key,strlen(value),value);
-  if (read_state == IDLE) read_state = WAITING_FOR_END;
-  return l;
+int ProtocolRESP::set_request(const char* key, const char* value, int len) {
+ 
+  //need to make the real value
+  char *val = (char*)malloc(len*sizeof(char)+1);
+  memset(val, 'a', len);
+  val[len] = '\0';
+
+  //check if we should use assoc
+  if (opts.use_assoc && strlen(key) > ((unsigned int)(opts.assoc+1)) )
+  {    
+      int l = hset_request(key,val,len);
+      free(val);
+      return l;
+  }
+
+  else
+  {
+    int l;
+    l = evbuffer_add_printf(bufferevent_get_output(bev),
+                            "*3\r\n$3\r\nSET\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n", 
+                            strlen(key),key,len,val);
+    l += len + 2;
+    if (read_state == IDLE) read_state = WAITING_FOR_END;
+    free(val);
+    return l;
+  }
 
 }
 
@@ -55,11 +79,84 @@ int ProtocolRESP::set_request(const char* key, const char* value, int value_len)
  * Send a RESP get request.
  */
 int ProtocolRESP::get_request(const char* key) {
+  
+  //check if we should use assoc
+  if (opts.use_assoc && strlen(key) > ((unsigned int)(opts.assoc+1)) )
+      return hget_request(key);
+  else
+  {
+    int l;
+    l = evbuffer_add_printf(bufferevent_get_output(bev),
+                            "*2\r\n$3\r\nGET\r\n$%lu\r\n%s\r\n",strlen(key),key);
+
+    if (read_state == IDLE) read_state = WAITING_FOR_GET;
+    return l;
+  }
+}
+
+/**
+ * RESP HSET
+ * HSET myhash field1 "Hello"
+ * We break the key by last assoc bytes for now...
+ * We are guarenteed a key of at least assoc+1 bytes...but
+ * the vast vast majority are going to be 20 bytes.
+ * 
+ * DBG code
+ * fprintf(stderr,"--\n");
+ * fprintf(stderr,"*4\r\n$4\r\nHSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n",
+ *           strlen(hash),hash,strlen(field),field,len,value);
+ * fprintf(stderr,"--\n");
+ */
+
+int ProtocolRESP::hset_request(const char* key, const char* value, int len) {
+  
   int l;
+  //hash is first n-assoc bytes
+  //field is last assoc bytes
+  //value is value
+  int assoc = opts.assoc;
+  char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
+  char* field = (char*)malloc(sizeof(char)*(assoc+1)); 
+  strncpy(hash, key, strlen(key)-assoc);
+  strncpy(field,key+strlen(key)-assoc,assoc);
+  hash[strlen(key)-assoc] = '\0';
+  field[assoc] = '\0';
   l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*2\r\n$3\r\nGET\r\n$%lu\r\n%s\r\n",strlen(key),key);
+                          "*4\r\n$4\r\nHSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n",
+                          strlen(hash),hash,strlen(field),field,len,value);
+  l += len + 2;
+  if (read_state == IDLE) read_state = WAITING_FOR_END;
+  free(hash);
+  free(field);
+  return l;
+
+}
+
+/**
+ * RESP HGET
+ * HGET myhash field1
+ * We break the key by last assoc bytes for now...
+ * We are guarenteed a key of at least assoc+1 bytes...but
+ * the vast vast majority are going to be 20 bytes.
+ */
+int ProtocolRESP::hget_request(const char* key) {
+  int l;
+  //hash is first n-assoc bytes
+  //field is last assoc bytes
+  int assoc = opts.assoc;
+  char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
+  char* field = (char*)malloc(sizeof(char)*(assoc+1));
+  strncpy(hash, key, strlen(key)-assoc);
+  strncpy(field,key+strlen(key)-assoc,assoc);
+  hash[strlen(key)-assoc] = '\0';
+  field[assoc] = '\0';
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                          "*3\r\n$4\r\nHGET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n",
+                          strlen(hash),hash,strlen(field),field);
 
   if (read_state == IDLE) read_state = WAITING_FOR_GET;
+  free(hash);
+  free(field);
   return l;
 }
 
@@ -81,63 +178,46 @@ int ProtocolRESP::get_request(const char* key) {
  */
 bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found) {
   char *buf = NULL;
-  int len;
   size_t n_read_out;
 
-  switch (read_state) {
-
-  case WAITING_FOR_GET:
-  case WAITING_FOR_END:
-    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-    if (buf == NULL) return false;
-
-    conn->stats.rx_bytes += n_read_out + 2; //don't forget CRLF
-
-    //this is checking if we have gotten the "END" data message 
-    //in memcached it is simply END, but in redis everything
-    //is sent as a bulk string, so we check for a $
-    if (buf[0] != '$') {
-      //if (read_state == WAITING_FOR_GET) conn->stats.get_misses++;
-      read_state = WAITING_FOR_GET;
-      free(buf);
-      done = true;
-    }
-    else {   
-      //A bulk string resp: "$6\r\nfoobar\r\n"
-      //1. Consume the first "$##\r\n", evbuffer_readln returns
-      //   "$##", where ## is the number of bytes in the bulk string
-      sscanf(buf, "$%d", &len);
-      data_length = len;
-      //null response => miss
-      if (data_length == -1) {
-        if (read_state == WAITING_FOR_GET) {
-          conn->stats.get_misses++;
-          conn->stats.window_get_misses++;
-          found = false;
-        }
-        read_state = WAITING_FOR_GET;
-        done = true;
-        free(buf);
-      }
-      else
-      {
-        free(buf);
-
-        //2. Consume the next "foobar"
-        buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-        conn->stats.rx_bytes += n_read_out + 2;  //don't forget CRLF
-        
-        free(buf); 
-        done = true;
-      }
-    }
-    return true;
-
-
-  default: printf("state: %d\n", read_state); DIE("Unimplemented!");
+  buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+  if (buf == NULL) 
+  {
+      done = false;
+      return false;
   }
+  conn->stats.rx_bytes += n_read_out;
+  
+  //RESP null response => miss
+  if (!strncmp(buf,"$-1",3)) 
+  {
+    conn->stats.get_misses++;
+    conn->stats.window_get_misses++;
+    found = false;
+    
+  }
+  //HSET or SET response was good, just consume the input and move on
+  //with our lives
+  else if (!strncmp(buf,"+OK",3) || !strncmp(buf,":1",2) || !strncmp(buf,":0",2) )
+  {
+      found = false;
+      done = true;
+  }
+  //else we got a hit
+  else
+  {
+    if (buf)
+      free(buf);
+    // Consume the next "foobar"
+    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
+    conn->stats.rx_bytes += n_read_out; 
+    found = true;
+  }    
+  done = true;
+  free(buf);
+  return true;
 
-  DIE("Shouldn't ever reach here...");
+  
 }
 
 /**

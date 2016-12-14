@@ -17,6 +17,13 @@ option "redis"  - "Use Redis RESP protocol instead of memchached."
 option "getset" - "Use getset mode, in getset mode we first issue \
 a GET and if the response is MISS, then issue a SET for on that
 key following distribution value."
+
+option "assoc" - "We create hash tables by taking the truncating the \
+                   key by b bytes. The n-b bytes are the key for redis, in the original \
+                   (key,value). The value is a hash table and we acess field \
+                   b to get the value. Essentially this makes redis n-way \
+                   associative cache. Only works in redis mode. For small key \
+                   sizes we just use normal method of (key,value) store. No hash table." int default="4"
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 

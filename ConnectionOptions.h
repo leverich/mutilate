@@ -11,10 +11,11 @@ typedef struct {
   int records;
   int misswindow;
   int queries;
-    
+  int assoc;  
   char file_name[256];
   bool read_file;
   bool binary;
+  bool use_assoc;
   bool redis;
   bool getset;
   bool sasl;

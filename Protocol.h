@@ -78,6 +78,8 @@ public:
   virtual bool setup_connection_r(evbuffer* input) { return true; }
   virtual int  get_request(const char* key);
   virtual int  set_request(const char* key, const char* value, int len);
+  virtual int  hget_request(const char* key);
+  virtual int  hset_request(const char* key, const char* value, int len);
   virtual bool handle_response(evbuffer* input, bool &done, bool &found);
 
 private:
@@ -85,7 +87,7 @@ private:
     IDLE,
     WAITING_FOR_GET,
     WAITING_FOR_GET_DATA,
-    WAITING_FOR_END,
+    WAITING_FOR_END
   };
 
   read_fsm read_state;
