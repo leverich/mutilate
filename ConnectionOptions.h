@@ -18,6 +18,7 @@ typedef struct {
   bool use_assoc;
   bool redis;
   bool getset;
+  bool delete90;
   bool sasl;
   char username[32];
   char password[32];

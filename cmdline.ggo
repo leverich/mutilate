@@ -17,6 +17,10 @@ option "redis"  - "Use Redis RESP protocol instead of memchached."
 option "getset" - "Use getset mode, in getset mode we first issue \
 a GET and if the response is MISS, then issue a SET for on that
 key following distribution value."
+option "delete90" - "Delete 90 percent of keys after halfway through \
+                     the workload, used to model Rumbel et. al. USENIX \
+                     FAST '14 workloads. MUST BE IN GETSET MODE and 
+                     have a set number of queries"
 
 option "assoc" - "We create hash tables by taking the truncating the \
                    key by b bytes. The n-b bytes are the key for redis, in the original \

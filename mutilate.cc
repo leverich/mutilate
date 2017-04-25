@@ -1077,6 +1077,10 @@ void args_to_options(options_t* options) {
 
   //getset mode (first issue get, then set same key if miss)
   options->getset = args.getset_given;
+  //delete 90 percent of keys after halfway
+  //model workload in Rumble and Ousterhout - log structured memory
+  //for dram based storage
+  options->delete90 = args.delete90_given;
 
   options->sasl = args.username_given;
   

@@ -147,6 +147,15 @@ void Connection::issue_something(double now) {
  * Issue a get first, if not found then set
  */
 void Connection::issue_getset(double now) {
+  
+  if (options.queries != 0 && 
+     (((long unsigned)options.queries/2) == stats.gets) &&
+     options.delete90 &&
+     stats.gets > 1) 
+  {
+      issue_delete90(now);
+  }
+
 
   //if the last request was miss we need to issue a set
   if (last_miss)
@@ -248,6 +257,37 @@ void Connection::issue_get(const char* key, double now) {
 }
 
 /**
+ * Issue a delete90 request to the server.
+ */
+void Connection::issue_delete90(double now) {
+  Operation op;
+  int l;
+
+#if HAVE_CLOCK_GETTIME
+  op.start_time = get_time_accurate();
+#else
+  if (now == 0.0) {
+#if USE_CACHED_TIME
+    struct timeval now_tv;
+    event_base_gettimeofday_cached(base, &now_tv);
+    op.start_time = tv_to_double(&now_tv);
+#else
+    op.start_time = get_time();
+#endif
+  } else {
+    op.start_time = now;
+  }
+#endif
+
+  op.type = Operation::DELETE;
+  op_queue.push(op);
+
+  if (read_state == IDLE) read_state = WAITING_FOR_DELETE;
+  l = prot->delete90_request();
+  if (read_state != LOADING) stats.tx_bytes += l;
+}
+
+/**
  * Issue a set request to the server.
  */
 void Connection::issue_set(const char* key, const char* value, int length,
@@ -287,6 +327,7 @@ void Connection::pop_op() {
     switch (op.type) {
     case Operation::GET: read_state = WAITING_FOR_GET; break;
     case Operation::SET: read_state = WAITING_FOR_SET; break;
+    case Operation::DELETE: read_state = WAITING_FOR_DELETE; break;
     default: DIE("Not implemented.");
     }
   }
@@ -314,6 +355,7 @@ void Connection::finish_op(Operation *op) {
   switch (op->type) {
   case Operation::GET: stats.log_get(*op); break;
   case Operation::SET: stats.log_set(*op); break;
+  case Operation::DELETE: break;
   default: DIE("Not implemented.");
   }
 
@@ -524,6 +566,11 @@ void Connection::read_callback() {
       
       assert(op_queue.size() > 0);
       if (!prot->handle_response(input, done, found)) return;
+      finish_op(op);
+      break;
+    
+    case WAITING_FOR_DELETE:
+      if (!prot->handle_response(input,done,found)) return;
       finish_op(op);
       break;
 

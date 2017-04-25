@@ -20,6 +20,7 @@ public:
   virtual bool setup_connection_r(evbuffer* input) = 0;
   virtual int  get_request(const char* key) = 0;
   virtual int  set_request(const char* key, const char* value, int len) = 0;
+  virtual int  delete90_request() = 0;
   virtual bool handle_response(evbuffer* input, bool &done, bool &found) = 0;
 
 protected:
@@ -41,6 +42,7 @@ public:
   virtual bool setup_connection_r(evbuffer* input) { return true; }
   virtual int  get_request(const char* key);
   virtual int  set_request(const char* key, const char* value, int len);
+  virtual int  delete90_request();
   virtual bool handle_response(evbuffer* input, bool &done, bool &found);
 
 private:
@@ -48,7 +50,7 @@ private:
     IDLE,
     WAITING_FOR_GET,
     WAITING_FOR_GET_DATA,
-    WAITING_FOR_END,
+    WAITING_FOR_END
   };
 
   read_fsm read_state;
@@ -65,6 +67,7 @@ public:
   virtual bool setup_connection_r(evbuffer* input);
   virtual int  get_request(const char* key);
   virtual int  set_request(const char* key, const char* value, int len);
+  virtual int  delete90_request();
   virtual bool handle_response(evbuffer* input, bool &done, bool &found);
 };
 
@@ -80,6 +83,7 @@ public:
   virtual int  set_request(const char* key, const char* value, int len);
   virtual int  hget_request(const char* key);
   virtual int  hset_request(const char* key, const char* value, int len);
+  virtual int  delete90_request();
   virtual bool handle_response(evbuffer* input, bool &done, bool &found);
 
 private:
@@ -87,6 +91,7 @@ private:
     IDLE,
     WAITING_FOR_GET,
     WAITING_FOR_GET_DATA,
+    WAITING_FOR_DELETE,
     WAITING_FOR_END
   };
 

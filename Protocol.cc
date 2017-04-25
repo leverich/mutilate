@@ -161,6 +161,18 @@ int ProtocolRESP::hget_request(const char* key) {
 }
 
 /**
+ * RESP DELETE 90 - delete 90 percent of keys in DB
+ */
+int ProtocolRESP::delete90_request() {
+  int l;
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                            "*1\r\n$8\r\nFLUSHALL\r\n");
+
+  if (read_state == IDLE) read_state = WAITING_FOR_DELETE;
+  return l;
+}
+
+/**
  * Handle a RESP response.
  *
  * In RESP, the type of data depends on the first byte:
@@ -242,6 +254,15 @@ int ProtocolAscii::set_request(const char* key, const char* value, int len) {
   bufferevent_write(bev, "\r\n", 2);
   l += len + 2;
   if (read_state == IDLE) read_state = WAITING_FOR_END;
+  return l;
+}
+
+/** WARNING UNIMPLEMENTED **/
+int ProtocolAscii::delete90_request() {
+  int l;
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                            "*1\r\n$8\r\nFLUSHALL\r\n");
+
   return l;
 }
 
@@ -368,6 +389,15 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len) {
   bufferevent_write(bev, key, keylen);
   bufferevent_write(bev, value, len);
   return 24 + ntohl(h.body_len);
+}
+
+/** WARNING UNIMPLEMENTED **/
+int ProtocolBinary::delete90_request() {
+  int l;
+  l = evbuffer_add_printf(bufferevent_get_output(bev),
+                            "*1\r\n$8\r\nFLUSHALL\r\n");
+
+  return l;
 }
 
 /**
