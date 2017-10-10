@@ -23,6 +23,7 @@ typedef struct {
   char username[32];
   char password[32];
 
+  char prefix[256];
   char hashtype[256];
   char keysize[32];
   char valuesize[32];

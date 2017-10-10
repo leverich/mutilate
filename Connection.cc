@@ -17,6 +17,8 @@
 #include "util.h"
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
+#include <string.h>
 
 /**
  * Create a new connection to a server endpoint.
@@ -128,10 +130,13 @@ void Connection::start_loading() {
  * Issue either a get or set request to the server according to our probability distribution.
  */
 void Connection::issue_something(double now) {
+  char skey[256];
   char key[256];
   // FIXME: generate key distribution here!
   string keystr = keygen->generate(lrand48() % options.records);
-  strcpy(key, keystr.c_str());
+  strcpy(skey, keystr.c_str());
+  strcpy(key, options.prefix);
+  strcat(key,skey);
 
   if (drand48() < options.update) {
     int index = lrand48() % (1024 * 1024);
@@ -174,6 +179,7 @@ void Connection::issue_getset(double now) {
         valuelen = key_len[keystr];
         strcpy(vlen, valuelen.c_str());
         int vl = atoi(vlen);
+      
 
         issue_set(key, &random_char[index], vl);
     }
@@ -195,8 +201,16 @@ void Connection::issue_getset(double now) {
     {
       string keystr;
       char key[256];
+      char skey[256];
       keystr = keygen->generate(lrand48() % options.records);
-      strcpy(key, keystr.c_str());
+      strcpy(skey, keystr.c_str());
+      strcpy(key,options.prefix);
+      strcat(key,skey);
+      
+      char log[256];
+      int length = valuesize->generate();
+      sprintf(log,"%s,%d\n",key,length);
+      write(2,log,strlen(log));
       
       issue_get(key, now);
     }
@@ -215,7 +229,10 @@ void Connection::issue_getset(double now) {
       key_len[rKey] = rvaluelen;
 
       char key[256];
-      strcpy(key, rKey.c_str());
+      char skey[256];
+      strcpy(skey, rKey.c_str());
+      strcpy(key,options.prefix);
+      strcat(key,skey);
       issue_get(key, now);
     }
   }
@@ -247,6 +264,9 @@ void Connection::issue_get(const char* key, double now) {
   }
 #endif
 
+  //record before rx 
+  //r_vsize = stats.rx_bytes % 100000;
+  
   op.key = string(key);
   op.type = Operation::GET;
   op_queue.push(op);
@@ -302,8 +322,17 @@ void Connection::issue_set(const char* key, const char* value, int length,
   else op.start_time = now;
 #endif
 
+  //record value size
+  //r_vsize = length;
+  //r_appid = key[0] - '0';
+  //const char* kptr = key;
+  //kptr += 2;
+  //r_key = atoi(kptr);
+  //r_ksize = strlen(kptr);
+  
   op.type = Operation::SET;
   op_queue.push(op);
+
 
   if (read_state == IDLE) read_state = WAITING_FOR_SET;
   l = prot->set_request(key, value, length);
@@ -557,6 +586,13 @@ void Connection::read_callback() {
             strcpy(last_key, keystr.c_str());
             last_miss = 0;
         }
+
+
+        //char log[256];
+        //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
+        //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
+        //write(2,log,strlen(log));
+
         finish_op(op); // sets read_state = IDLE
 
       }
@@ -566,6 +602,13 @@ void Connection::read_callback() {
       
       assert(op_queue.size() > 0);
       if (!prot->handle_response(input, done, found)) return;
+      
+
+      //char log[256];
+      //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
+      //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
+      //write(2,log,strlen(log));
+      
       finish_op(op);
       break;
     

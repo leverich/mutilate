@@ -1075,6 +1075,9 @@ void args_to_options(options_t* options) {
   if (args.read_file_given)
     strcpy(options->file_name, args.read_file_arg);
 
+  if (args.prefix_given)
+      strcpy(options->prefix,args.prefix_arg);
+
   //getset mode (first issue get, then set same key if miss)
   options->getset = args.getset_given;
   //delete 90 percent of keys after halfway

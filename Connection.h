@@ -103,6 +103,15 @@ private:
   char last_key[256];
   int last_miss;
 
+  //trace format variables
+  double r_time; // time in seconds
+  int r_appid; // prefix minus ':' char
+  int r_type;  //1 = get, 2 = set
+  int r_ksize; //key size
+  int r_vsize; //-1 or size of value if hit
+  int r_key; //op->key as int
+  int r_hit; //1 if hit, 0 if miss
+
   Protocol *prot;
   Generator *valuesize;
   Generator *keysize;
