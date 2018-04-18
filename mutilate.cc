@@ -39,11 +39,12 @@
 #include "util.h"
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
+#define MAX_VALUE_SIZE 1024 * 1024 * 8
 
 using namespace std;
 
 gengetopt_args_info args;
-char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
+char random_char[MAX_VALUE_SIZE];  // Buffer used to generate random values.
 
 #ifdef HAVE_LIBZMQ
 vector<zmq::socket_t*> agent_sockets;
@@ -421,8 +422,12 @@ int main(int argc, char **argv) {
   if (args.quiet_given) log_level = QUIET;
 
   if (args.depth_arg < 1) DIE("--depth must be >= 1");
-  //  if (args.valuesize_arg < 1 || args.valuesize_arg > 1024*1024)
-  //    DIE("--valuesize must be >= 1 and <= 1024*1024");
+
+  if (atoi(args.valuesize_arg) < 1 || atoi(args.valuesize_arg) > MAX_VALUE_SIZE) {
+      DIE("\"--valuesize must be >= 1 and <= %i", MAX_VALUE_SIZE);
+  }
+
+
   if (args.qps_arg < 0) DIE("--qps must be >= 0");
   if (args.update_arg < 0.0 || args.update_arg > 1.0)
     DIE("--update must be >= 0.0 and <= 1.0");
@@ -470,8 +475,9 @@ int main(int argc, char **argv) {
   pthread_barrier_init(&barrier, NULL, options.threads);
 
   vector<string> servers;
-  for (unsigned int s = 0; s < args.server_given; s++)
-    servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  for (unsigned int s = 0; s < args.server_given; s++) {
+      servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  }
 
   ConnectionStats stats;
 
