@@ -8,6 +8,7 @@
 #define GENERATOR_H
 
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 #include "config.h"
 
@@ -197,6 +198,10 @@ public:
     double U = (double) h / ULLONG_MAX;
     double G = g->generate(U);
     int keylen = MAX(round(G), floor(log10(max)) + 1);
+    // memcached limits keys to 250 bytes
+    //   https://github.com/memcached/memcached/blob/95e6469bd2ceef92bcaaf140e2724fc73d556185/memcached.c#L2205
+    //   https://github.com/memcached/memcached/blob/95e6469bd2ceef92bcaaf140e2724fc73d556185/memcached.h#L36
+    keylen = MIN(keylen, 250);
     char key[256];
     snprintf(key, 256, "%0*" PRIu64, keylen, ind);
 
