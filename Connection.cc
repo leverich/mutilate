@@ -132,11 +132,14 @@ void Connection::start_loading() {
 void Connection::issue_something(double now) {
   char skey[256];
   char key[256];
+  memset(key,0,256);
+  memset(skey,0,256);
   // FIXME: generate key distribution here!
   string keystr = keygen->generate(lrand48() % options.records);
-  strcpy(skey, keystr.c_str());
-  strcpy(key, options.prefix);
-  strcat(key,skey);
+  strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
+  if (args.prefix_given)
+	strncpy(key, options.prefix,strlen(options.prefix));
+  strncat(key,skey,strlen(skey));
 
   if (drand48() < options.update) {
     int index = lrand48() % (1024 * 1024);
@@ -202,10 +205,13 @@ void Connection::issue_getset(double now) {
       string keystr;
       char key[256];
       char skey[256];
+	  memset(key,0,256);
+      memset(skey,0,256);
       keystr = keygen->generate(lrand48() % options.records);
-      strcpy(skey, keystr.c_str());
-      strcpy(key,options.prefix);
-      strcat(key,skey);
+	  strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
+  	  if (args.prefix_given)
+  	    strncpy(key, options.prefix,strlen(options.prefix));
+  	  strncat(key,skey,strlen(skey));
       
       char log[256];
       int length = valuesize->generate();
@@ -230,9 +236,12 @@ void Connection::issue_getset(double now) {
 
       char key[256];
       char skey[256];
-      strcpy(skey, rKey.c_str());
-      strcpy(key,options.prefix);
-      strcat(key,skey);
+	  memset(key,0,256);
+      memset(skey,0,256);
+	  strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
+  	  if (args.prefix_given)
+  	    strncpy(key, options.prefix,strlen(options.prefix));
+  	  strncat(key,skey,strlen(skey));
       issue_get(key, now);
     }
   }
