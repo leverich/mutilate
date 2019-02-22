@@ -17,7 +17,6 @@ public:
   type_enum type;
 
   string key;
-  // string value;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

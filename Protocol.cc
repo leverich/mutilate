@@ -68,7 +68,7 @@ int ProtocolRESP::set_request(const char* key, const char* value, int len) {
                             "*3\r\n$3\r\nSET\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n", 
                             strlen(key),key,len,val);
     l += len + 2;
-    if (read_state == IDLE) read_state = WAITING_FOR_END;
+    if (read_state == IDLE) read_state = WAITING_FOR_GET;
     free(val);
     return l;
   }
@@ -188,49 +188,167 @@ int ProtocolRESP::delete90_request() {
  *
  *
  */
-bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found) {
+bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
+
   char *buf = NULL;
+  char *databuf = NULL;
+  char *obj_size_str = NULL;
+  int len;
   size_t n_read_out;
 
-  buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-  if (buf == NULL) 
-  {
-      done = false;
-      return false;
-  }
-  conn->stats.rx_bytes += n_read_out;
-  
-  //RESP null response => miss
-  if (!strncmp(buf,"$-1",3)) 
-  {
-    conn->stats.get_misses++;
-    conn->stats.window_get_misses++;
-    found = false;
+  switch (read_state) {
+
+  case WAITING_FOR_GET:
     
-  }
-  //HSET or SET response was good, just consume the input and move on
-  //with our lives
-  else if (!strncmp(buf,"+OK",3) || !strncmp(buf,":1",2) || !strncmp(buf,":0",2) )
-  {
+    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+    if (buf == NULL) return false;
+
+    obj_size_str = buf+1;
+    obj_size = atoi(obj_size_str);
+
+    conn->stats.rx_bytes += n_read_out;
+    
+    databuf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+    //fprintf(stderr,"--------------------\n");
+    //fprintf(stderr,"resp size %lu\n",n_read_out);
+    //fprintf(stderr,"data size %d\n",obj_size);
+    //fprintf(stderr,"-------header---------\n");
+    //fprintf(stderr,"%s\n",buf);
+    //fprintf(stderr,"-------data-----------\n");
+    //fprintf(stderr,"%s\n",databuf);
+
+    conn->stats.rx_bytes += n_read_out;
+
+    if (!strncmp(buf,"$-1",3)) {
+      conn->stats.get_misses++;
+      conn->stats.window_get_misses++;
+      found = false; 
+      done = true;
+    } else if ((int)n_read_out != obj_size) {
+     
+
+      // FIXME: check key name to see if it corresponds to the op at
+      // the head of the op queue?  This will be necessary to
+      // support "gets" where there may be misses.
+
+      data_length = obj_size;
+      read_state = WAITING_FOR_GET_DATA;
+      done = false;
+    } else if (!strncmp(buf,"+OK",3) || !strncmp(buf,":1",2) || !strncmp(buf,":0",2) ) {
       found = false;
       done = true;
+    } else {
+      // got all the data..
+      found = true;
+      done = true;
+    }
+    if (databuf)
+        free(databuf);
+    free(buf);
+    return true;
+
+  case WAITING_FOR_GET_DATA:
+    
+    len = evbuffer_get_length(input);
+    
+    //finally got all data...
+    if (len >= data_length + 2) {
+      evbuffer_drain(input, data_length + 2);
+      conn->stats.rx_bytes += data_length + 2;
+      read_state = WAITING_FOR_GET;
+      obj_size = data_length;
+      found = true;
+      done = true;
+      return true;
+    }
+    return false;
+
+  default: printf("state: %d\n", read_state); DIE("Unimplemented!");
   }
-  //else we got a hit
-  else
-  {
-    if (buf)
-      free(buf);
-    // Consume the next "foobar"
-    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF_STRICT);
-    conn->stats.rx_bytes += n_read_out; 
-    found = true;
-  }    
-  done = true;
-  free(buf);
-  return true;
+
+  DIE("Shouldn't ever reach here...");
+}
+
+  //char *buf = NUL; //for initial readline
+  //char *dbuf = NULL; //for data readline
+  //size_t n_read_out;
+
+  //buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+  //if (buf == NULL) 
+  //{
+  //    done = false;
+  //    return false;
+  //}
+  //conn->stats.rx_bytes += n_read_out;
+  //
+  //size_t len = evbuffer_get_length(input);
+
+  //fprintf(stderr,"--------------------\n");
+  //fprintf(stderr,"resp size %lu\n",n_read_out);
+  //fprintf(stderr,"ev len %lu\n",len);
+  //fprintf(stderr,"--------------------\n");
+  //fprintf(stderr,"%s\n",buf);
+  ////RESP null response => miss
+  //if (!strncmp(buf,"$-1",3)) 
+  //{
+  //  conn->stats.get_misses++;
+  //  conn->stats.window_get_misses++;
+  //  found = false;
+  //  
+  //}
+  ////HSET or SET response was good, just consume the input and move on
+  ////with our lives
+  //else if (!strncmp(buf,"+OK",3) || !strncmp(buf,":1",2) || !strncmp(buf,":0",2) )
+  //{
+  //    found = false;
+  //    done = true;
+  //}
+  ////else we got a hit
+  //else
+  //{
+  //  char* nlen = buf+1;
+  //  //fprintf(stderr,"%s\n",nlen);
+  //  obj_size = atoi(nlen);
+  //  // Consume the next "foobar"
+  //  //size_t len = evbuffer_get_length(input);
+  //  //dbuf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+  //  //if (!dbuf)
+  //  //{
+  //  //    fprintf(stderr,"--------------------\n");
+  //  //    fprintf(stderr,"next foobar (null) %lu\n",n_read_out);
+  //  //    fprintf(stderr,"ev len %lu\n",len);
+  //  //    fprintf(stderr,"--------------------\n");
+  //  //    fprintf(stderr,"%s\n",dbuf);
+
+  //  //    //read_state = WAITING_FOR_GET_DATA;
+  //  //    //done = false;
+  //  //    //return false;
+  //  //}
+  //  //else
+  //  //{
+
+  //  //    fprintf(stderr,"--------------------\n");
+  //  //    fprintf(stderr,"next foobar (null) %lu\n",n_read_out);
+  //  //    fprintf(stderr,"ev len %lu\n",len);
+  //  //    fprintf(stderr,"--------------------\n");
+  //  //    fprintf(stderr,"%s\n",dbuf);
+  //  //}
+
+  //  //conn->stats.rx_bytes += n_read_out; 
+  //  found = true;
+  //}    
+  ////read_state = WAITING_FOR_GET;
+  ////fprintf(stderr,"--------------------\n");
+  ////fprintf(stderr,"read_state %u\n",read_state);
+  ////fprintf(stderr,"--------------------\n");
+  //done = true;
+  ////if (dbuf) 
+  ////    free(dbuf);
+  //free(buf);
+  //return true;
 
   
-}
+//}
 
 /**
  * Send an ascii get request.
@@ -269,7 +387,7 @@ int ProtocolAscii::delete90_request() {
 /**
  * Handle an ascii response.
  */
-bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found) {
+bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
   char *buf = NULL;
   int len;
   size_t n_read_out;
@@ -299,6 +417,7 @@ bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found) {
       // support "gets" where there may be misses.
 
       data_length = len;
+      obj_size = len; 
       read_state = WAITING_FOR_GET_DATA;
       done = false;
     } else {
@@ -353,7 +472,8 @@ bool ProtocolBinary::setup_connection_r(evbuffer* input) {
   if (!opts.sasl) return true;
 
   bool b,c;
-  return handle_response(input, b, c);
+  int obj_size;
+  return handle_response(input, b, c, obj_size);
 }
 
 /**
@@ -406,7 +526,7 @@ int ProtocolBinary::delete90_request() {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found) {
+bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -418,6 +538,7 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found) {
   int targetLen = 24 + ntohl(h->body_len);
   if (length < targetLen) return false;
 
+  obj_size = ntohl(h->body_len);
   // If something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       conn->stats.get_misses++;

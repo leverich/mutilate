@@ -130,13 +130,10 @@ void Connection::start_loading() {
  * Issue either a get or set request to the server according to our probability distribution.
  */
 void Connection::issue_something(double now) {
-  char skey[256];
   char key[256];
   // FIXME: generate key distribution here!
   string keystr = keygen->generate(lrand48() % options.records);
-  strcpy(skey, keystr.c_str());
-  strcpy(key, options.prefix);
-  strcat(key,skey);
+  strcpy(key, keystr.c_str());
 
   if (drand48() < options.update) {
     int index = lrand48() % (1024 * 1024);
@@ -201,11 +198,8 @@ void Connection::issue_getset(double now) {
     {
       string keystr;
       char key[256];
-      char skey[256];
       keystr = keygen->generate(lrand48() % options.records);
-      strcpy(skey, keystr.c_str());
-      strcpy(key,options.prefix);
-      strcat(key,skey);
+      strcpy(key, keystr.c_str());
       
       char log[256];
       int length = valuesize->generate();
@@ -229,10 +223,7 @@ void Connection::issue_getset(double now) {
       key_len[rKey] = rvaluelen;
 
       char key[256];
-      char skey[256];
-      strcpy(skey, rKey.c_str());
-      strcpy(key,options.prefix);
-      strcat(key,skey);
+      strcpy(key, rKey.c_str());
       issue_get(key, now);
     }
   }
@@ -555,6 +546,9 @@ void Connection::read_callback() {
   bool done, found, full_read;
 
   //initially assume found (for sets that may come through here)
+  //is this correct? do we want to assume true in case that 
+  //GET was found, but wrong value size (i.e. update value)
+  //
   found = true;
 
   if (op_queue.size() == 0) V("Spurious read callback.");
@@ -568,31 +562,59 @@ void Connection::read_callback() {
 
     case WAITING_FOR_GET:
       assert(op_queue.size() > 0);
-      full_read = prot->handle_response(input, done, found);
+
+      int obj_size;
+      full_read = prot->handle_response(input, done, found, obj_size);
 
       if (!full_read) {
         return;
       } else if (done) {
         
-        if (!found && options.getset && stats.gets >= 1)
-        {
-            string keystr = op->key;
-            strcpy(last_key, keystr.c_str());
-            last_miss = 1;
-        }
-        else if (options.getset)
-        {
-            string keystr = op->key;
-            strcpy(last_key, keystr.c_str());
-            last_miss = 0;
-        }
+            if (!found && options.getset)
+            {
+                string keystr = op->key;
+                strcpy(last_key, keystr.c_str());
+                last_miss = 1;
+            }
+            else if (found && options.getset)
+            {
+                string keystr = op->key;
+                strcpy(last_key, keystr.c_str());
+                
+                
+                char vlen[256];
+                string valuelen = key_len[keystr];
+                strcpy(vlen, valuelen.c_str());
+                size_t vl = atoi(vlen);
+
+                //char log[256];
+                //sprintf(log,"key %s, resp size: %d, last GET size %lu\n",keystr.c_str(),obj_size, vl);
+                //write(2,log,strlen(log));
+                if (obj_size != (int)vl)
+                {
+
+                    stats.window_get_misses++;
+                    stats.get_misses++;
+                    //char log[256];
+                    //sprintf(log,"update key %s\n",keystr.c_str());
+                    //write(2,log,strlen(log));
+                    last_miss = 1;
+                }
+                else
+                {
+                    //char log[256];
+                    //sprintf(log,"same key %s\n",keystr.c_str());
+                    //write(2,log,strlen(log));
+                    last_miss = 0;
+                }
+            }
 
 
         //char log[256];
         //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
         //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
         //write(2,log,strlen(log));
-
+        
         finish_op(op); // sets read_state = IDLE
 
       }
@@ -601,7 +623,7 @@ void Connection::read_callback() {
     case WAITING_FOR_SET:
       
       assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done, found)) return;
+      if (!prot->handle_response(input, done, found, obj_size)) return;
       
 
       //char log[256];
@@ -613,13 +635,13 @@ void Connection::read_callback() {
       break;
     
     case WAITING_FOR_DELETE:
-      if (!prot->handle_response(input,done,found)) return;
+      if (!prot->handle_response(input,done,found, obj_size)) return;
       finish_op(op);
       break;
 
     case LOADING:
       assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done, found)) return;
+      if (!prot->handle_response(input, done, found, obj_size)) return;
       loader_completed++;
       pop_op();
 

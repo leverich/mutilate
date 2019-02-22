@@ -21,7 +21,7 @@ public:
   virtual int  get_request(const char* key) = 0;
   virtual int  set_request(const char* key, const char* value, int len) = 0;
   virtual int  delete90_request() = 0;
-  virtual bool handle_response(evbuffer* input, bool &done, bool &found) = 0;
+  virtual bool handle_response(evbuffer* input, bool &done, bool &found, int &obj_size) = 0;
 
 protected:
   options_t    opts;
@@ -43,7 +43,7 @@ public:
   virtual int  get_request(const char* key);
   virtual int  set_request(const char* key, const char* value, int len);
   virtual int  delete90_request();
-  virtual bool handle_response(evbuffer* input, bool &done, bool &found);
+  virtual bool handle_response(evbuffer* input, bool &done, bool &found, int &obj_size);
 
 private:
   enum read_fsm {
@@ -68,7 +68,7 @@ public:
   virtual int  get_request(const char* key);
   virtual int  set_request(const char* key, const char* value, int len);
   virtual int  delete90_request();
-  virtual bool handle_response(evbuffer* input, bool &done, bool &found);
+  virtual bool handle_response(evbuffer* input, bool &done, bool &found, int &obj_size);
 };
 
 class ProtocolRESP : public Protocol {
@@ -84,7 +84,7 @@ public:
   virtual int  hget_request(const char* key);
   virtual int  hset_request(const char* key, const char* value, int len);
   virtual int  delete90_request();
-  virtual bool handle_response(evbuffer* input, bool &done, bool &found);
+  virtual bool handle_response(evbuffer* input, bool &done, bool &found, int &obj_size);
 
 private:
   enum read_fsm {

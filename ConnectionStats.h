@@ -125,9 +125,9 @@ class ConnectionStats {
   }
 
   static void print_header() {
-    printf("%-7s %7s %7s %7s %7s %7s %7s %7s %7s\n",
+    printf("%-7s %7s %7s %7s %7s %7s %7s %7s %7s %7s %7s\n",
            "#type", "avg", "std", "min", /*"1st",*/ "5th", "10th",
-           "90th", "95th", "99th");
+           "50th", "90th", "95th", "99th", "99.9th");
   }
 
 #ifdef USE_ADAPTIVE_SAMPLER
@@ -139,18 +139,18 @@ class ConnectionStats {
     size_t l = copy.size();
 
     if (l == 0) {
-      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
-             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
       if (newline) printf("\n");
       return;
     }
 
     sort(copy.begin(), copy.end());
 
-    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
            tag, std::accumulate(copy.begin(), copy.end(), 0.0) / l,
-           copy[0], copy[(l*1) / 100], copy[(l*5) / 100], copy[(l*10) / 100],
-           copy[(l*90) / 100], copy[(l*95) / 100], copy[(l*99) / 100]
+           copy[0], copy[(l*1) / 100], copy[(l*5) / 100], copy[(l*10) / 100], copy[(l*50) / 100],
+           copy[(l*90) / 100], copy[(l*95) / 100], copy[(l*99) / 100], copy[(l*99.9) / 100]
            );
     if (newline) printf("\n");
   }
@@ -166,10 +166,10 @@ class ConnectionStats {
 
     sort(copy.begin(), copy.end());
 
-    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
            tag, std::accumulate(copy.begin(), copy.end(), 0.0) / l,
-           copy[0], copy[(l*1) / 100], copy[(l*5) / 100], copy[(l*10) / 100],
-           copy[(l*90) / 100], copy[(l*95) / 100], copy[(l*99) / 100]
+           copy[0], copy[(l*1) / 100], copy[(l*5) / 100], copy[(l*10) / 100], copy[(l*50) / 100],
+           copy[(l*90) / 100], copy[(l*95) / 100], copy[(l*99) / 100], copy[(l*99.9) / 100]
            );
     if (newline) printf("\n");
   }
@@ -177,8 +177,8 @@ class ConnectionStats {
   void print_stats(const char *tag, HistogramSampler &sampler,
                    bool newline = true) {
     if (sampler.total() == 0) {
-      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
-             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
       if (newline) printf("\n");
       return;
     }
@@ -186,8 +186,8 @@ class ConnectionStats {
     printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
            tag, sampler.average(),
            sampler.get_nth(0), sampler.get_nth(1), sampler.get_nth(5),
-           sampler.get_nth(10), sampler.get_nth(90),
-           sampler.get_nth(95), sampler.get_nth(99));
+           sampler.get_nth(10), sampler.get_nth(50), sampler.get_nth(90),
+           sampler.get_nth(95), sampler.get_nth(99), sampler.get_nth(99.9));
 
     if (newline) printf("\n");
   }
@@ -195,17 +195,18 @@ class ConnectionStats {
   void print_stats(const char *tag, LogHistogramSampler &sampler,
                    bool newline = true) {
     if (sampler.total() == 0) {
-      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
-             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+      printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+             tag, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
       if (newline) printf("\n");
       return;
     }
 
-    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
+    printf("%-7s %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f",
            tag, sampler.average(), sampler.stddev(),
-           sampler.get_nth(0), /*sampler.get_nth(1),*/ sampler.get_nth(5),
-           sampler.get_nth(10), sampler.get_nth(90),
-           sampler.get_nth(95), sampler.get_nth(99));
+           sampler.get_nth(0), sampler.get_nth(5),
+           sampler.get_nth(10), sampler.get_nth(50),
+           sampler.get_nth(90), sampler.get_nth(95),
+           sampler.get_nth(99), sampler.get_nth(99.9) );
 
     if (newline) printf("\n");
   }

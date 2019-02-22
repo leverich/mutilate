@@ -8,7 +8,7 @@ env['HAVE_POSIX_BARRIER'] = True
 
 env.Append(CPPPATH = ['/usr/local/include', '/opt/local/include'])
 env.Append(LIBPATH = ['/opt/local/lib'])
-env.Append(CCFLAGS = '-std=c++11 -D_GNU_SOURCE ')
+env.Append(CCFLAGS = '-std=c++11 -D_GNU_SOURCE')
 if sys.platform == 'darwin':
     env['CC']  = 'clang'
     env['CXX'] = 'clang++'
@@ -37,8 +37,8 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O3 -Wall -g')
-env.Append(CPPFLAGS = ' -O3 -Wall -g')
+env.Append(CFLAGS = ' -O0 -Wall -g')
+env.Append(CPPFLAGS = ' -O0 -Wall -g')
 
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 
