@@ -42,6 +42,9 @@
 
 using namespace std;
 
+ifstream kvfile;
+pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
+
 gengetopt_args_info args;
 char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
 
@@ -60,6 +63,8 @@ struct thread_data {
 };
 
 // struct evdns_base *evdns;
+    
+pthread_t pt[1024];
 
 pthread_barrier_t barrier;
 
@@ -651,8 +656,12 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
+  if (options.read_file && (options.getset || options.getsetorset)) {
+      kvfile.open(options.file_name);
+      
+  }
+
   if (options.threads > 1) {
-    pthread_t pt[options.threads];
     struct thread_data td[options.threads];
 #ifdef __clang__
     vector<string>* ts = static_cast<vector<string>*>(alloca(sizeof(vector<string>) * options.threads));
@@ -1064,6 +1073,7 @@ void args_to_options(options_t* options) {
 
   options->use_assoc = args.assoc_given;
   options->assoc = args.assoc_arg;
+  options->twitter_trace = args.twitter_trace_arg;
 
   options->binary = args.binary_given;
   options->redis = args.redis_given;
@@ -1080,6 +1090,7 @@ void args_to_options(options_t* options) {
 
   //getset mode (first issue get, then set same key if miss)
   options->getset = args.getset_given;
+  options->getsetorset = args.getsetorset_given;
   //delete 90 percent of keys after halfway
   //model workload in Rumble and Ousterhout - log structured memory
   //for dram based storage

@@ -22,33 +22,36 @@ class ConnectionStats {
  public:
  ConnectionStats(bool _sampling = true) :
 #ifdef USE_ADAPTIVE_SAMPLER
-   get_sampler(100000), set_sampler(100000), op_sampler(100000),
+   get_sampler(100000), set_sampler(100000), access_sampler(100000), op_sampler(100000),
 #elif defined(USE_HISTOGRAM_SAMPLER)
-   get_sampler(10000,1), set_sampler(10000,1), op_sampler(1000,1),
+   get_sampler(10000,1), set_sampler(10000,1), access_sampler(10000,1), op_sampler(1000,1),
 #else
-   get_sampler(200), set_sampler(200), op_sampler(100),
+   get_sampler(200), set_sampler(200), access_sampler(200), op_sampler(100),
 #endif
-   rx_bytes(0), tx_bytes(0), gets(0), sets(0),
-   get_misses(0), window_gets(0), window_sets(0), 
+   rx_bytes(0), tx_bytes(0), gets(0), sets(0), accesses(0),
+   get_misses(0), window_gets(0), window_sets(0), window_accesses(0),
    window_get_misses(0), skips(0), sampling(_sampling) {}
 
 #ifdef USE_ADAPTIVE_SAMPLER
   AdaptiveSampler<Operation> get_sampler;
   AdaptiveSampler<Operation> set_sampler;
+  AdaptiveSampler<Operation> access_sampler;
   AdaptiveSampler<double> op_sampler;
 #elif defined(USE_HISTOGRAM_SAMPLER)
   HistogramSampler get_sampler;
   HistogramSampler set_sampler;
+  HistogramSampler access_sampler;
   HistogramSampler op_sampler;
 #else
   LogHistogramSampler get_sampler;
   LogHistogramSampler set_sampler;
+  LogHistogramSampler access_sampler;
   LogHistogramSampler op_sampler;
 #endif
 
   uint64_t rx_bytes, tx_bytes;
-  uint64_t gets, sets, get_misses;
-  uint64_t window_gets, window_sets, window_get_misses;
+  uint64_t gets, sets, accesses, get_misses;
+  uint64_t window_gets, window_sets,  window_accesses, window_get_misses;
   uint64_t skips;
 
   double start, stop;
@@ -57,6 +60,8 @@ class ConnectionStats {
 
   void log_get(Operation& op) { if (sampling) get_sampler.sample(op); window_gets++; gets++; }
   void log_set(Operation& op) { if (sampling) set_sampler.sample(op); window_sets++; sets++; }
+  void log_access(Operation& op) { //if (sampling) access_sampler.sample(op); 
+      window_accesses++; accesses++; }
   void log_op (double op)     { if (sampling)  op_sampler.sample(op); }
 
   double get_qps() {
@@ -72,6 +77,8 @@ class ConnectionStats {
     for (auto s: get_sampler.samples)
       samples.push_back(s.time()); // (s.end_time - s.start_time) * 1000000);
     for (auto s: set_sampler.samples)
+      samples.push_back(s.time()); // (s.end_time - s.start_time) * 1000000);
+    for (auto s: access_sampler.samples)
       samples.push_back(s.time()); // (s.end_time - s.start_time) * 1000000);
 
     sort(samples.begin(), samples.end());
@@ -94,10 +101,12 @@ class ConnectionStats {
 #ifdef USE_ADAPTIVE_SAMPLER
     for (auto i: cs.get_sampler.samples) get_sampler.sample(i); //log_get(i);
     for (auto i: cs.set_sampler.samples) set_sampler.sample(i); //log_set(i);
+    for (auto i: cs.access_sampler.samples) access_sampler.sample(i); //log_access(i);
     for (auto i: cs.op_sampler.samples)  op_sampler.sample(i); //log_op(i);
 #else
     get_sampler.accumulate(cs.get_sampler);
     set_sampler.accumulate(cs.set_sampler);
+    access_sampler.accumulate(cs.access_sampler);
     op_sampler.accumulate(cs.op_sampler);
 #endif
 
@@ -105,6 +114,7 @@ class ConnectionStats {
     tx_bytes += cs.tx_bytes;
     gets += cs.gets;
     sets += cs.sets;
+    accesses += cs.accesses;
     get_misses += cs.get_misses;
     skips += cs.skips;
 
@@ -117,6 +127,7 @@ class ConnectionStats {
     tx_bytes += as.tx_bytes;
     gets += as.gets;
     sets += as.sets;
+    accesses += as.accesses;
     get_misses += as.get_misses;
     skips += as.skips;
 

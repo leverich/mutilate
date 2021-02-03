@@ -17,6 +17,7 @@ public:
   type_enum type;
 
   string key;
+  int valuelen;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

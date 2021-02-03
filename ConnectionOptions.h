@@ -18,6 +18,7 @@ typedef struct {
   bool use_assoc;
   bool redis;
   bool getset;
+  bool getsetorset;
   bool delete90;
   bool sasl;
   char username[32];
@@ -33,7 +34,7 @@ typedef struct {
 
   // qps_per_connection
   // iadist
-
+  int twitter_trace;
   double update;
   int time;
   bool loadonly;

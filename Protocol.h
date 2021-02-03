@@ -50,7 +50,9 @@ private:
     IDLE,
     WAITING_FOR_GET,
     WAITING_FOR_GET_DATA,
-    WAITING_FOR_END
+    WAITING_FOR_END,
+    WAITING_FOR_SET,
+    WAITING_FOR_GETSET
   };
 
   read_fsm read_state;

@@ -32,3 +32,4 @@ double generate_uniform(double lambda) {
   if (lambda <= 0.0) return 0;
   return 1.0 / lambda;
 }
+

@@ -95,7 +95,6 @@ private:
 
   //need to keep value length for read key
   map<string,string> key_len;
-  ifstream kvfile;
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
 
@@ -124,13 +123,15 @@ private:
   void finish_op(Operation *op);
   void issue_something(double now = 0.0);
   void issue_getset(double now = 0.0);
+  int issue_getsetorset(double now = 0.0);
   void drive_write_machine(double now = 0.0);
 
   // request functions
   void issue_sasl();
   void issue_get(const char* key, double now = 0.0);
+  void issue_get_with_len(const char* key, int valuelen, double now = 0.0);
   void issue_set(const char* key, const char* value, int length,
-                 double now = 0.0);
+                 double now = 0.0, bool is_access = false);
   void issue_delete90(double now = 0.0);
 
   // protocol fucntions

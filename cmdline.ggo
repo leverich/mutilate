@@ -17,6 +17,7 @@ option "redis"  - "Use Redis RESP protocol instead of memchached."
 option "getset" - "Use getset mode, in getset mode we first issue \
 a GET and if the response is MISS, then issue a SET for on that
 key following distribution value."
+option "getsetorset" - "Use getset mode and allow for direct writes (with optype == 2)."
 option "prefix" - "Prefix all keys with a string (helps with multi-tennant eval)" string
 option "delete90" - "Delete 90 percent of keys after halfway through \
                      the workload, used to model Rumbel et. al. USENIX \
@@ -33,6 +34,7 @@ option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 
 option "read_file"  - "Read keys from file." string default=""
+option "twitter_trace"  - "use twitter memcached trace format from file." int default="0"
 
 option "keysize" K "Length of memcached keys (distribution)."
        string default="30"

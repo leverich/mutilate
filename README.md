@@ -137,10 +137,33 @@ Command-line Options
                                       a GET and if the response is MISS, then issue
                                       a SET for on that
                                       key following distribution value.
+          --getsetorset             Use getset mode and allow for direct writes
+                                      (with optype == 2).
+          --prefix=STRING           Prefix all keys with a string (helps with
+                                      multi-tennant eval)
+          --delete90                Delete 90 percent of keys after halfway through
+                                      the workload, used to model Rumbel et. al.
+                                      USENIX                      FAST '14
+                                      workloads. MUST BE IN GETSET MODE and 
+                                                           have a set number of
+                                      queries
+          --assoc=INT               We create hash tables by taking the truncating
+                                      the                    key by b bytes. The
+                                      n-b bytes are the key for redis, in the
+                                      original                    (key,value). The
+                                      value is a hash table and we acess field
+                                      b to get the value. Essentially this makes
+                                      redis n-way                    associative
+                                      cache. Only works in redis mode. For small
+                                      key                    sizes we just use
+                                      normal method of (key,value) store. No hash
+                                      table.  (default=`4')
       -q, --qps=INT                 Target aggregate QPS. 0 = peak QPS.
                                       (default=`0')
       -t, --time=INT                Maximum time to run (seconds).  (default=`5')
           --read_file=STRING        Read keys from file.  (default=`')
+          --twitter_trace=INT       use twitter memcached trace format from file.
+                                      (default=`0')
       -K, --keysize=STRING          Length of memcached keys (distribution).
                                       (default=`30')
       -V, --valuesize=STRING        Length of memcached values (distribution).

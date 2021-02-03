@@ -357,7 +357,9 @@ int ProtocolAscii::get_request(const char* key) {
   int l;
   l = evbuffer_add_printf(
     bufferevent_get_output(bev), "get %s\r\n", key);
-  if (read_state == IDLE) read_state = WAITING_FOR_GET;
+  if (read_state == IDLE) {
+      read_state = WAITING_FOR_GET;
+  } 
   return l;
 }
 
@@ -368,10 +370,18 @@ int ProtocolAscii::set_request(const char* key, const char* value, int len) {
   int l;
   l = evbuffer_add_printf(bufferevent_get_output(bev),
                           "set %s 0 0 %d\r\n", key, len);
-  bufferevent_write(bev, value, len);
+  
+  char *val = (char*)malloc(len*sizeof(char)+1);
+  memset(val, 'a', len);
+  val[len] = '\0';
+  
+  bufferevent_write(bev, val, len);
   bufferevent_write(bev, "\r\n", 2);
   l += len + 2;
-  if (read_state == IDLE) read_state = WAITING_FOR_END;
+  if (read_state == IDLE) {
+      read_state = WAITING_FOR_END;
+  }
+  free(val);
   return l;
 }
 
@@ -409,6 +419,9 @@ bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, in
       }
       read_state = WAITING_FOR_GET;
       done = true;
+    } else if (!strncmp(buf, "STORED", 6)) {
+      read_state = WAITING_FOR_GET;
+      done = true;
     } else if (!strncmp(buf, "VALUE", 5)) {
       sscanf(buf, "VALUE %*s %*d %d", &len);
 
@@ -417,7 +430,6 @@ bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, in
       // support "gets" where there may be misses.
 
       data_length = len;
-      obj_size = len; 
       read_state = WAITING_FOR_GET_DATA;
       done = false;
     } else {
@@ -437,6 +449,42 @@ bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, in
       return true;
     }
     return false;
+
+  /*
+  case WAITING_FOR_GETSET:
+    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+    if (buf == NULL) return false;
+
+    conn->stats.rx_bytes += n_read_out;
+    if (!strncmp(buf, "END", 3)) {
+        conn->stats.get_misses++;
+        conn->stats.window_get_misses++;
+        found = false;
+        done = true;
+        read_state = WAITING_FOR_SET;
+        return true;
+    } else if (!strncmp(buf, "STORED", 6)) {
+        done = true;
+        read_state = WAITING_FOR_GET;
+        return true;
+    }
+    
+  
+  case WAITING_FOR_SET:
+    buf = evbuffer_readln(input, &n_read_out, EVBUFFER_EOL_CRLF);
+    if (buf == NULL) return false;
+
+    conn->stats.rx_bytes += n_read_out;
+
+    if (!strncmp(buf, "STORED", 6)) {
+        done = true;
+        read_state = IDLE;
+        return true;
+    } else {
+        done = false;
+        return true;
+    }
+    */
 
   default: printf("state: %d\n", read_state); DIE("Unimplemented!");
   }
@@ -538,7 +586,7 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
   int targetLen = 24 + ntohl(h->body_len);
   if (length < targetLen) return false;
 
-  obj_size = ntohl(h->body_len);
+  obj_size = ntohl(h->body_len)-4;
   // If something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       conn->stats.get_misses++;

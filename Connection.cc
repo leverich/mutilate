@@ -20,6 +20,9 @@
 #include <unistd.h>
 #include <string.h>
 
+extern ifstream kvfile;
+extern pthread_mutex_t flock;
+
 /**
  * Create a new connection to a server endpoint.
  */
@@ -33,8 +36,10 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   keysize = createGenerator(options.keysize);
   
   keygen = new KeyGenerator(keysize, options.records);
-  if (options.read_file && options.getset)
-    kvfile.open(options.file_name);
+  //if (options.read_file && (options.getset || options.getsetorset)) {
+  //    kvfile.open(options.file_name);
+  //    
+  //}
 
   if (options.lambda <= 0) {
     iagen = createGenerator("0");
@@ -156,99 +161,209 @@ void Connection::issue_something(double now) {
  */
 void Connection::issue_getset(double now) {
   
-  if (options.queries != 0 && 
-     (((long unsigned)options.queries/2) == stats.gets) &&
-     options.delete90 &&
-     stats.gets > 1) 
-  {
-      issue_delete90(now);
-  }
-
-
-  //if the last request was miss we need to issue a set
-  if (last_miss)
-  {
-    //if not found and in getset mode, issue set
-    if (options.read_file)
-    {
-        char key[256];
-        char vlen[256];
-        string valuelen;
-
-        string keystr = string(last_key);
-        strcpy(key, keystr.c_str());
-        
-        int index = lrand48() % (1024 * 1024);
-        valuelen = key_len[keystr];
-        strcpy(vlen, valuelen.c_str());
-        int vl = atoi(vlen);
-      
-
-        issue_set(key, &random_char[index], vl);
-    }
-    else 
-    {
-        char key[256];
-        string keystr = string(last_key);
-        strcpy(key, keystr.c_str());
-
-        int index = lrand48() % (1024 * 1024);
-
-        issue_set(key, &random_char[index], valuesize->generate());
-    }
-    last_miss = 0;
-  }
-  else
-  {
     if (!options.read_file && !kvfile.is_open())
     {
-      string keystr;
-      char key[256];
-      char skey[256];
-      memset(key,0,256);
-      memset(skey,0,256);
-      keystr = keygen->generate(lrand48() % options.records);
-      strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
-      if (args.prefix_given)
-  	strncpy(key, options.prefix,strlen(options.prefix));
-      strncat(key,skey,strlen(skey));
-      
-      char log[256];
-      int length = valuesize->generate();
-      sprintf(log,"%s,%d\n",key,length);
-      write(2,log,strlen(log));
-      
-      issue_get(key, now);
+        string keystr;
+        char key[256];
+        char skey[256];
+        memset(key,0,256);
+        memset(skey,0,256);
+        keystr = keygen->generate(lrand48() % options.records);
+        strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
+        if (args.prefix_given) {
+          strncpy(key, options.prefix,strlen(options.prefix));
+        }
+        strncat(key,skey,strlen(skey));
+        
+        char log[256];
+        int length = valuesize->generate();
+        sprintf(log,"%s,%d\n",key,length);
+        write(2,log,strlen(log));
+        
+        issue_get_with_len(key, length, now);
     }
     else
     {
-      string line;
-      string rKey;
-      string rvaluelen;
-      getline(kvfile,line);
-      stringstream ss(line);
-      getline( ss, rKey, ',' );
-      getline( ss, rvaluelen, ',' );
-     
-
-      //save valuelen
-      key_len[rKey] = rvaluelen;
-
-      char key[256];
-      char skey[256];
-      memset(key,0,256);
-      memset(skey,0,256);
-      strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
-      if (args.prefix_given)
-        strncpy(key, options.prefix,strlen(options.prefix));
-      strncat(key,skey,strlen(skey));
-      issue_get(key, now);
+        string line;
+        string rT;
+        string rApp;
+        string rReq;
+        string rKey;
+        string rvaluelen;
+        
+        pthread_mutex_lock(&flock);
+        getline(kvfile,line);
+        pthread_mutex_unlock(&flock);
+        stringstream ss(line);
+        getline( ss, rT, ',');
+        getline( ss, rApp, ',');
+        getline( ss, rReq, ',');
+        getline( ss, rKey, ',' );
+        getline( ss, rvaluelen, ',' );
+        
+        int vl = atoi(rvaluelen.c_str());
+        
+        char key[256];
+        char skey[256];
+        memset(key,0,256);
+        memset(skey,0,256);
+        strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
+        if (args.prefix_given)
+          strncpy(key, options.prefix,strlen(options.prefix));
+        strncat(key,skey,strlen(skey));
+        issue_get_with_len(key, vl, now);
     }
-  }
-
 
 }
 
+/**
+ * Get/Set or Set Style
+ * If a GET command: Issue a get first, if not found then set
+ * If trace file (or prob. write) says to set, then set it
+ */
+int Connection::issue_getsetorset(double now) {
+ 
+  int ret = 0;
+
+  if (!options.read_file && !kvfile.is_open())
+  {
+        string keystr;
+        char key[256];
+        char skey[256];
+        memset(key,0,256);
+        memset(skey,0,256);
+        keystr = keygen->generate(lrand48() % options.records);
+        strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
+        if (args.prefix_given)
+            strncpy(key, options.prefix,strlen(options.prefix));
+
+        strncat(key,skey,strlen(skey));
+        
+        char log[256];
+        int length = valuesize->generate();
+        sprintf(log,"%s,%d\n",key,length);
+        write(2,log,strlen(log));
+        
+        issue_get_with_len(key, length, now);
+  }
+  else
+  {
+        string line;
+        string rT;
+        string rApp;
+        string rOp;
+        string rKey;
+        string rKeySize;
+        string rvaluelen;
+
+        pthread_mutex_lock(&flock);
+        if (kvfile.good()) {
+            getline(kvfile,line);
+            pthread_mutex_unlock(&flock);
+        }
+        else {
+            pthread_mutex_unlock(&flock);
+            return 1;
+        }
+        stringstream ss(line);
+        int Op = 0;
+
+        if (options.twitter_trace == 1) {
+            getline( ss, rT, ',' );
+            getline( ss, rKey, ',' );
+            getline( ss, rKeySize, ',' );
+            getline( ss, rvaluelen, ',' );
+            getline( ss, rApp, ',' );
+            getline( ss, rOp, ',' );
+            if (rOp.compare("get") == 0) {
+                Op = 1;
+            } else if (rOp.compare("set") == 0) {
+                Op = 2;
+            } else {
+                Op = 1;
+            }
+            
+        } else {
+            getline( ss, rT, ',' );
+            getline( ss, rApp, ',' );
+            getline( ss, rOp, ',' );
+            getline( ss, rKey, ',' );
+            getline( ss, rvaluelen, ',' );
+            if (rOp.compare("read") == 0) 
+                Op = 1;
+            if (rOp.compare("write") == 0) 
+                Op = 2;
+        }
+
+
+        int vl = atoi(rvaluelen.c_str());
+        if (vl < 8) vl = 8; 
+        char key[1024];
+        char skey[1024];
+        memset(key,0,1024);
+        memset(skey,0,1024);
+        strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
+
+        if (args.prefix_given) {
+            strncpy(key, options.prefix,strlen(options.prefix));
+        }
+        strncat(key,skey,strlen(skey));
+        
+        //if (strcmp(key,"100004781") == 0) {
+        //   fprintf(stderr,"ready!\n");
+        //}
+        switch(Op)
+        {
+          case 1:
+              issue_get_with_len(key, vl, now);
+              break;
+          case 2:
+              int index = lrand48() % (1024 * 1024);
+              issue_set(key, &random_char[index], vl, now,true);
+              break;
+        }
+  }
+  
+  return ret;
+}
+
+/**
+ * Issue a get request to the server.
+ */
+void Connection::issue_get_with_len(const char* key, int valuelen, double now) {
+  Operation op;
+  int l;
+
+#if HAVE_CLOCK_GETTIME
+  op.start_time = get_time_accurate();
+#else
+  if (now == 0.0) {
+#if USE_CACHED_TIME
+    struct timeval now_tv;
+    event_base_gettimeofday_cached(base, &now_tv);
+    op.start_time = tv_to_double(&now_tv);
+#else
+    op.start_time = get_time();
+#endif
+  } else {
+    op.start_time = now;
+  }
+#endif
+
+  //record before rx 
+  //r_vsize = stats.rx_bytes % 100000;
+  
+  op.key = string(key);
+  op.valuelen = valuelen;
+  op.type = Operation::GET;
+  op_queue.push(op);
+
+  if (read_state == IDLE) read_state = WAITING_FOR_GET;
+  l = prot->get_request(key);
+  if (read_state != LOADING) stats.tx_bytes += l;
+  
+  stats.log_access(op);
+}
 
 /**
  * Issue a get request to the server.
@@ -283,6 +398,8 @@ void Connection::issue_get(const char* key, double now) {
   if (read_state == IDLE) read_state = WAITING_FOR_GET;
   l = prot->get_request(key);
   if (read_state != LOADING) stats.tx_bytes += l;
+  
+  stats.log_access(op);
 }
 
 /**
@@ -320,7 +437,7 @@ void Connection::issue_delete90(double now) {
  * Issue a set request to the server.
  */
 void Connection::issue_set(const char* key, const char* value, int length,
-                           double now) {
+                           double now, bool is_access) {
   Operation op;
   int l;
 
@@ -346,6 +463,9 @@ void Connection::issue_set(const char* key, const char* value, int length,
   if (read_state == IDLE) read_state = WAITING_FOR_SET;
   l = prot->set_request(key, value, length);
   if (read_state != LOADING) stats.tx_bytes += l;
+
+  if (is_access)
+      stats.log_access(op);
 }
 
 /**
@@ -403,15 +523,16 @@ void Connection::finish_op(Operation *op) {
   //lets check if we should output stats for the window
   //Do the binning for percentile outputs
   //crude at start
-  if ((options.misswindow != 0) && ( ((stats.window_gets) % options.misswindow) == 0))
+  if ((options.misswindow != 0) && ( ((stats.window_accesses) % options.misswindow) == 0))
   {
       if (stats.window_gets != 0)
       {
-        printf("%lu,%.4f\n",(stats.gets),
-                ((double)stats.window_get_misses/(double)stats.window_gets));
+        //printf("%lu,%.4f\n",(stats.accesses),
+        //        ((double)stats.window_get_misses/(double)stats.window_accesses));
         stats.window_gets = 0;
         stats.window_get_misses = 0;
         stats.window_sets = 0;
+        stats.window_accesses = 0;
       }
   }
 
@@ -425,17 +546,37 @@ void Connection::finish_op(Operation *op) {
 bool Connection::check_exit_condition(double now) {
   if (read_state == INIT_READ) return false;
   if (now == 0.0) now = get_time();
-  if ((options.queries == 0) && 
-      (now > start_time + options.time))
-  {
-      return true;
+
+  if (options.read_file) {
+    pthread_mutex_lock(&flock);
+    int eof = kvfile.eof();
+    pthread_mutex_unlock(&flock);
+    if (eof) {
+        return true;
+    }
+    else if ((options.queries == 1) && 
+        (now > start_time + options.time))
+    {
+        return true;
+    }
+    else {
+        return false;
+    }
+
+  } else {
+    if (options.queries != 0 && 
+       (((long unsigned)options.queries) == (stats.accesses))) 
+    {
+        return true;
+    }
+    if ((options.queries == 0) && 
+        (now > start_time + options.time))
+    {
+        return true;
+    }
+    if (options.loadonly && read_state == IDLE) return true;
   }
-  if (options.loadonly && read_state == IDLE) return true;
-  if (options.queries != 0 && 
-     (((long unsigned)options.queries) == stats.gets)) 
-  {
-      return true;
-  }
+
   return false;
 }
 
@@ -463,9 +604,64 @@ void Connection::event_callback(short events) {
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev);
     if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
+    
+    //stats.print_header();
+    //stats.print_stats("read",   stats.get_sampler);
+    //stats.print_stats("update", stats.set_sampler);
+    //stats.print_stats("op_q",   stats.op_sampler);
+
+    //int total = stats.gets + stats.sets;
+
+    //printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
+    //       total / (stats.stop - stats.start),
+    //       total, stats.stop - stats.start);
+
+
+    //printf("\n");
+
+    //printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
+    //       (double) stats.get_misses/stats.gets*100);
+
+    //printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
+    //       (double) stats.skips / total * 100);
+
+    //printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
+    //       stats.rx_bytes,
+    //       (double) stats.rx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+    //printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
+    //       stats.tx_bytes,
+    //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+
     DIE("BEV_EVENT_ERROR: %s", strerror(errno));
 
   } else if (events & BEV_EVENT_EOF) {
+    //stats.print_header();
+    //stats.print_stats("read",   stats.get_sampler);
+    //stats.print_stats("update", stats.set_sampler);
+    //stats.print_stats("op_q",   stats.op_sampler);
+
+    //int total = stats.gets + stats.sets;
+
+    //printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
+    //       total / (stats.stop - stats.start),
+    //       total, stats.stop - stats.start);
+
+
+    //printf("\n");
+
+    //printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
+    //       (double) stats.get_misses/stats.gets*100);
+
+    //printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
+    //       (double) stats.skips / total * 100);
+
+    //printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
+    //       stats.rx_bytes,
+    //       (double) stats.rx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+    //printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
+    //       stats.tx_bytes,
+    //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
+
     DIE("Unexpected EOF from server.");
   }
 }
@@ -514,6 +710,10 @@ void Connection::drive_write_machine(double now) {
 
       if (options.getset)
         issue_getset(now);
+      else if (options.getsetorset) {
+        int ret = issue_getsetorset(now);
+        if (ret) return; //if at EOF
+      }
       else
         issue_something(now);
       
@@ -588,44 +788,26 @@ void Connection::read_callback() {
         return;
       } else if (done) {
         
-            if (!found && options.getset)
-            {
-                string keystr = op->key;
-                strcpy(last_key, keystr.c_str());
-                last_miss = 1;
+        if ((!found && options.getset) || 
+            (!found && options.getsetorset)) {
+            char key[256];
+            string keystr = op->key;
+            strcpy(key, keystr.c_str());
+            int valuelen = op->valuelen;
+        
+            finish_op(op); // sets read_state = IDLE
+            //if not found and in getset mode, issue set
+            if (options.read_file) {
+                int index = lrand48() % (1024 * 1024);
+                issue_set(key, &random_char[index], valuelen);
             }
-            else if (found && options.getset)
-            {
-                string keystr = op->key;
-                strcpy(last_key, keystr.c_str());
-                
-                
-                char vlen[256];
-                string valuelen = key_len[keystr];
-                strcpy(vlen, valuelen.c_str());
-                size_t vl = atoi(vlen);
-
-                //char log[256];
-                //sprintf(log,"key %s, resp size: %d, last GET size %lu\n",keystr.c_str(),obj_size, vl);
-                //write(2,log,strlen(log));
-                if (obj_size != (int)vl)
-                {
-
-                    stats.window_get_misses++;
-                    stats.get_misses++;
-                    //char log[256];
-                    //sprintf(log,"update key %s\n",keystr.c_str());
-                    //write(2,log,strlen(log));
-                    last_miss = 1;
-                }
-                else
-                {
-                    //char log[256];
-                    //sprintf(log,"same key %s\n",keystr.c_str());
-                    //write(2,log,strlen(log));
-                    last_miss = 0;
-                }
+            else {
+                int index = lrand48() % (1024 * 1024);
+                issue_set(key, &random_char[index], valuelen);
             }
+        } else {
+            finish_op(op);
+        }
 
 
         //char log[256];
@@ -633,7 +815,6 @@ void Connection::read_callback() {
         //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
         //write(2,log,strlen(log));
         
-        finish_op(op); // sets read_state = IDLE
 
       }
       break;
