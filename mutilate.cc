@@ -162,7 +162,11 @@ void agent() {
   zmq::context_t context(1);
 
   zmq::socket_t socket(context, ZMQ_REP);
-  socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  if (atoi(args.agent_port_arg) == -1) {
+    socket.bind(string("ipc:///tmp/memcached.sock").c_str());
+  } else {
+    socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  }
 
   while (true) {
     zmq::message_t request;
@@ -1075,6 +1079,7 @@ void args_to_options(options_t* options) {
   options->assoc = args.assoc_arg;
   options->twitter_trace = args.twitter_trace_arg;
 
+  options->unix_socket = args.unix_socket_given;
   options->binary = args.binary_given;
   options->redis = args.redis_given;
  

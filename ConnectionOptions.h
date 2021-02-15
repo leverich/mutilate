@@ -15,6 +15,7 @@ typedef struct {
   char file_name[256];
   bool read_file;
   bool binary;
+  bool unix_socket;
   bool use_assoc;
   bool redis;
   bool getset;

@@ -1,4 +1,7 @@
 #include <netinet/tcp.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -68,10 +71,24 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     prot = new ProtocolAscii(options, this, bev);
   }
 
-  if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
-                                          hostname.c_str(),
-                                          atoi(port.c_str()))) {
-    DIE("bufferevent_socket_connect_hostname()");
+  if (options.unix_socket) {
+    struct sockaddr_un sin;
+    memset(&sin, 0, sizeof(sin));
+    sin.sun_family = AF_LOCAL;
+    strcpy(sin.sun_path, hostname.c_str());
+
+    static int  addrlen;
+
+    addrlen = sizeof(sin);
+    if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) < 0) {
+      DIE("bufferevent_socket_connect()");
+    }
+  } else {
+    if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
+                                            hostname.c_str(),
+                                            atoi(port.c_str()))) {
+      DIE("bufferevent_socket_connect_hostname()");
+    }
   }
 
   timer = evtimer_new(base, timer_cb, this);
@@ -603,8 +620,10 @@ void Connection::event_callback(short events) {
 
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev);
-    if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
-    
+    //if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
+    if (err) fprintf(stderr,"DNS error: %s", evutil_gai_strerror(err));
+    return;
+
     //stats.print_header();
     //stats.print_stats("read",   stats.get_sampler);
     //stats.print_stats("update", stats.set_sampler);
@@ -662,7 +681,9 @@ void Connection::event_callback(short events) {
     //       stats.tx_bytes,
     //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
 
-    DIE("Unexpected EOF from server.");
+    //DIE("Unexpected EOF from server.");
+    fprintf(stderr,"Unexpected EOF from server.");
+    return;
   }
 }
 
