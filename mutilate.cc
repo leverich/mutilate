@@ -479,8 +479,13 @@ int main(int argc, char **argv) {
   pthread_barrier_init(&barrier, NULL, options.threads);
 
   vector<string> servers;
-  for (unsigned int s = 0; s < args.server_given; s++)
-    servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  for (unsigned int s = 0; s < args.server_given; s++) {
+    if (options.unix_socket) {
+        servers.push_back(string(args.server_arg[s]));
+    } else {
+        servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+    }
+  }
 
   ConnectionStats stats;
 

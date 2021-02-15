@@ -606,7 +606,7 @@ void Connection::event_callback(short events) {
     int fd = bufferevent_getfd(bev);
     if (fd < 0) DIE("bufferevent_getfd");
 
-    if (!options.no_nodelay) {
+    if (!options.no_nodelay && !options.unix_socket) {
       int one = 1;
       if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
                      (void *) &one, sizeof(one)) < 0)
