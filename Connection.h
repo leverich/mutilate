@@ -120,7 +120,8 @@ private:
 
   // state machine functions / event processing
   void pop_op();
-  void finish_op(Operation *op);
+  //void finish_op(Operation *op);
+  void finish_op(Operation *op,int was_hit);
   void issue_something(double now = 0.0);
   void issue_getset(double now = 0.0);
   int issue_getsetorset(double now = 0.0);

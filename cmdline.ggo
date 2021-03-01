@@ -19,6 +19,7 @@ option "getset" - "Use getset mode, in getset mode we first issue \
 a GET and if the response is MISS, then issue a SET for on that
 key following distribution value."
 option "getsetorset" - "Use getset mode and allow for direct writes (with optype == 2)."
+option "successful" - "Only record latency and throughput stats for successful queries"
 option "prefix" - "Prefix all keys with a string (helps with multi-tennant eval)" string
 option "delete90" - "Delete 90 percent of keys after halfway through \
                      the workload, used to model Rumbel et. al. USENIX \

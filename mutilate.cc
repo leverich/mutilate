@@ -784,7 +784,7 @@ int stick_this_thread_to_core(int core_id) {
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
   
-  stick_this_thread_to_core(td->id);
+  //stick_this_thread_to_core(td->id);
   ConnectionStats *cs = new ConnectionStats();
 
   do_mutilate(*td->servers, *td->options, *cs, td->master
@@ -1103,6 +1103,7 @@ void args_to_options(options_t* options) {
   options->twitter_trace = args.twitter_trace_arg;
 
   options->unix_socket = args.unix_socket_given;
+  options->successful_queries = args.successful_given;
   options->binary = args.binary_given;
   options->redis = args.redis_given;
  

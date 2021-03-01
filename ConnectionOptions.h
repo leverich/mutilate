@@ -16,6 +16,7 @@ typedef struct {
   bool read_file;
   bool binary;
   bool unix_socket;
+  bool successful_queries;
   bool use_assoc;
   bool redis;
   bool getset;

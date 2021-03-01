@@ -59,35 +59,58 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   last_miss = 0;
 
-  bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
-  bufferevent_enable(bev, EV_READ | EV_WRITE);
-
-  if (options.binary) {
-    prot = new ProtocolBinary(options, this, bev);
-  } else if (options.redis) {
-    prot = new ProtocolRESP(options, this, bev);
-  } else {
-    prot = new ProtocolAscii(options, this, bev);
-  }
-
   if (options.unix_socket) {
-    struct sockaddr_un sin;
-    memset(&sin, 0, sizeof(sin));
-    sin.sun_family = AF_LOCAL;
-    strcpy(sin.sun_path, hostname.c_str());
-
-    static int  addrlen;
     srand(time(NULL));
-    int s = rand() % 10;
-    sleep(s);
+    int tries = 10000;
+    int connected = 0;
+    int s = 1;
+    for (int i = 0; i < tries; i++) {
+  
+        bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+        bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
+        bufferevent_enable(bev, EV_READ | EV_WRITE);
 
-    addrlen = sizeof(sin);
-    if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) < 0) {
-      DIE("bufferevent_socket_connect()");
+
+        struct sockaddr_un sin;
+        memset(&sin, 0, sizeof(sin));
+        sin.sun_family = AF_LOCAL;
+        strcpy(sin.sun_path, hostname.c_str());
+
+        static int  addrlen;
+        addrlen = sizeof(sin);
+
+        if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) == 0) {
+            connected = 1;
+            if (options.binary) {
+              prot = new ProtocolBinary(options, this, bev);
+            } else if (options.redis) {
+              prot = new ProtocolRESP(options, this, bev);
+            } else {
+              prot = new ProtocolAscii(options, this, bev);
+            }
+            break;
+        }
+        bufferevent_free(bev);
+        s = rand() % 10;
+        usleep(s);
+
+    }
+    if (connected == 0) {
+        DIE("bufferevent_socket_connect()");
     }
   } else {
-    if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
+
+    if (options.binary) {
+      prot = new ProtocolBinary(options, this, bev);
+    } else if (options.redis) {
+      prot = new ProtocolRESP(options, this, bev);
+    } else {
+      prot = new ProtocolAscii(options, this, bev);
+    }
+      if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
                                             hostname.c_str(),
                                             atoi(port.c_str()))) {
       DIE("bufferevent_socket_connect_hostname()");
@@ -515,7 +538,7 @@ void Connection::pop_op() {
  * Finish up (record stats) an operation that just returned from the
  * server.
  */
-void Connection::finish_op(Operation *op) {
+void Connection::finish_op(Operation *op, int was_hit) {
   double now;
 #if USE_CACHED_TIME
   struct timeval now_tv;
@@ -530,11 +553,20 @@ void Connection::finish_op(Operation *op) {
   op->end_time = now;
 #endif
 
-  switch (op->type) {
-  case Operation::GET: stats.log_get(*op); break;
-  case Operation::SET: stats.log_set(*op); break;
-  case Operation::DELETE: break;
-  default: DIE("Not implemented.");
+  if (options.successful_queries && was_hit) { 
+    switch (op->type) {
+    case Operation::GET: stats.log_get(*op); break;
+    case Operation::SET: stats.log_set(*op); break;
+    case Operation::DELETE: break;
+    default: DIE("Not implemented.");
+    }
+  } else {
+    switch (op->type) {
+    case Operation::GET: stats.log_get(*op); break;
+    case Operation::SET: stats.log_set(*op); break;
+    case Operation::DELETE: break;
+    default: DIE("Not implemented.");
+    }
   }
 
   last_rx = now;
@@ -819,7 +851,7 @@ void Connection::read_callback() {
             strcpy(key, keystr.c_str());
             int valuelen = op->valuelen;
         
-            finish_op(op); // sets read_state = IDLE
+            finish_op(op,0); // sets read_state = IDLE
             //if not found and in getset mode, issue set
             if (options.read_file) {
                 int index = lrand48() % (1024 * 1024);
@@ -830,7 +862,7 @@ void Connection::read_callback() {
                 issue_set(key, &random_char[index], valuelen);
             }
         } else {
-            finish_op(op);
+            finish_op(op,1);
         }
 
 
@@ -854,12 +886,12 @@ void Connection::read_callback() {
       //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
       //write(2,log,strlen(log));
       
-      finish_op(op);
+      finish_op(op,1);
       break;
     
     case WAITING_FOR_DELETE:
       if (!prot->handle_response(input,done,found, obj_size)) return;
-      finish_op(op);
+      finish_op(op,1);
       break;
 
     case LOADING:
