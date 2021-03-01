@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -60,6 +61,7 @@ struct thread_data {
 #ifdef HAVE_LIBZMQ
   zmq::socket_t *socket;
 #endif
+  int id;
 };
 
 // struct evdns_base *evdns;
@@ -684,6 +686,7 @@ void go(const vector<string>& servers, options_t& options,
 
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
+      td[t].id = t;
 #ifdef HAVE_LIBZMQ
       td[t].socket = socket;
 #endif
@@ -729,6 +732,7 @@ void go(const vector<string>& servers, options_t& options,
 
       if (pthread_create(&pt[t], &attr, thread_main, &td[t]))
         DIE("pthread_create() failed");
+      usleep(t);
     }
 
     for (int t = 0; t < options.threads; t++) {
@@ -764,9 +768,23 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 }
 
+int stick_this_thread_to_core(int core_id) {
+   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+   if (core_id < 0 || core_id >= num_cores)
+      return EINVAL;
+
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+   pthread_t current_thread = pthread_self();    
+   return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
-
+  
+  stick_this_thread_to_core(td->id);
   ConnectionStats *cs = new ConnectionStats();
 
   do_mutilate(*td->servers, *td->options, *cs, td->master

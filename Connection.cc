@@ -78,6 +78,9 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     strcpy(sin.sun_path, hostname.c_str());
 
     static int  addrlen;
+    srand(time(NULL));
+    int s = rand() % 10;
+    sleep(s);
 
     addrlen = sizeof(sin);
     if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) < 0) {
