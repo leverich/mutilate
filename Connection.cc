@@ -259,6 +259,76 @@ void Connection::issue_getset(double now) {
 
 }
 
+int Connection::issue_something_trace(double now) {
+    int ret = 0;
+
+    string line;
+    string rT;
+    string rApp;
+    string rOp;
+    string rKey;
+    string rKeySize;
+    string rvaluelen;
+
+    pthread_mutex_lock(&flock);
+    if (kvfile.good()) {
+        getline(kvfile,line);
+        pthread_mutex_unlock(&flock);
+    }
+    else {
+        pthread_mutex_unlock(&flock);
+        return 1;
+    }
+    stringstream ss(line);
+    int Op = 0;
+
+    if (options.twitter_trace == 1) {
+        getline( ss, rT, ',' );
+        getline( ss, rKey, ',' );
+        getline( ss, rKeySize, ',' );
+        getline( ss, rvaluelen, ',' );
+        getline( ss, rApp, ',' );
+        getline( ss, rOp, ',' );
+        if (rOp.compare("get") == 0) {
+            Op = 1;
+        } else if (rOp.compare("set") == 0) {
+            Op = 2;
+        } else {
+            Op = 1;
+        }
+        
+    } else {
+        getline( ss, rT, ',' );
+        getline( ss, rApp, ',' );
+        getline( ss, rOp, ',' );
+        getline( ss, rKey, ',' );
+        getline( ss, rvaluelen, ',' );
+        if (rOp.compare("read") == 0) 
+            Op = 1;
+        if (rOp.compare("write") == 0) 
+            Op = 2;
+    }
+
+
+    int vl = atoi(rvaluelen.c_str());
+    if (vl < 8) vl = 8; 
+    
+    //if (strcmp(key,"100004781") == 0) {
+    //   fprintf(stderr,"ready!\n");
+    //}
+    switch(Op)
+    {
+      case 1:
+          issue_get_with_len(rKey.c_str(), vl, now);
+          break;
+      case 2:
+          int index = lrand48() % (1024 * 1024);
+          issue_set(rKey.c_str(), &random_char[index], vl, now,true);
+          break;
+    }
+    return ret;
+}
+
 /**
  * Get/Set or Set Style
  * If a GET command: Issue a get first, if not found then set
@@ -769,9 +839,12 @@ void Connection::drive_write_machine(double now) {
       else if (options.getsetorset) {
         int ret = issue_getsetorset(now);
         if (ret) return; //if at EOF
+      } else if (options.read_file) {
+        issue_something_trace(now);
       }
-      else
+      else {
         issue_something(now);
+      }
       
       last_tx = now;
       stats.log_op(op_queue.size());
@@ -862,7 +935,11 @@ void Connection::read_callback() {
                 issue_set(key, &random_char[index], valuelen);
             }
         } else {
-            finish_op(op,1);
+            if (!found) {
+                finish_op(op,1);
+            } else {
+                finish_op(op,0);
+            }
         }
 
 

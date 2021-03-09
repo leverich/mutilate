@@ -667,7 +667,7 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
-  if (options.read_file && (options.getset || options.getsetorset)) {
+  if (options.read_file) {
       kvfile.open(options.file_name);
       
   }
@@ -784,7 +784,11 @@ int stick_this_thread_to_core(int core_id) {
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
   
-  //stick_this_thread_to_core(td->id);
+  int res = stick_this_thread_to_core(td->id);
+  if (res != 0) {
+        DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+                  td->id, strerror(res));
+  }
   ConnectionStats *cs = new ConnectionStats();
 
   do_mutilate(*td->servers, *td->options, *cs, td->master

@@ -131,6 +131,7 @@ Command-line Options
     Basic options:
       -s, --server=STRING           Memcached server hostname[:port].  Repeat to
                                       specify multiple servers.
+          --unix_socket             Use UNIX socket instead of TCP.
           --binary                  Use binary memcached protocol instead of ASCII.
           --redis                   Use Redis RESP protocol instead of memchached.
           --getset                  Use getset mode, in getset mode we first issue
@@ -139,6 +140,8 @@ Command-line Options
                                       key following distribution value.
           --getsetorset             Use getset mode and allow for direct writes
                                       (with optype == 2).
+          --successful              Only record latency and throughput stats for
+                                      successful queries
           --prefix=STRING           Prefix all keys with a string (helps with
                                       multi-tennant eval)
           --delete90                Delete 90 percent of keys after halfway through

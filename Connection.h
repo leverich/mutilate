@@ -123,6 +123,7 @@ private:
   //void finish_op(Operation *op);
   void finish_op(Operation *op,int was_hit);
   void issue_something(double now = 0.0);
+  int issue_something_trace(double now = 0.0);
   void issue_getset(double now = 0.0);
   int issue_getsetorset(double now = 0.0);
   void drive_write_machine(double now = 0.0);
