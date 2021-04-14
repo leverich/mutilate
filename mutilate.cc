@@ -784,7 +784,8 @@ int stick_this_thread_to_core(int core_id) {
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
   
-  int res = stick_this_thread_to_core(td->id);
+  int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  int res = stick_this_thread_to_core(td->id % num_cores);
   if (res != 0) {
         DIE("pthread_attr_setaffinity_np(%d) failed: %s",
                   td->id, strerror(res));

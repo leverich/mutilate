@@ -281,6 +281,7 @@ int Connection::issue_something_trace(double now) {
     }
     stringstream ss(line);
     int Op = 0;
+    int vl = 0;
 
     if (options.twitter_trace == 1) {
         getline( ss, rT, ',' );
@@ -294,8 +295,32 @@ int Connection::issue_something_trace(double now) {
         } else if (rOp.compare("set") == 0) {
             Op = 2;
         } else {
-            Op = 1;
+            Op = 0;
         }
+
+        while (Op == 0) {
+            string line1;
+            pthread_mutex_lock(&flock);
+            if (kvfile.good()) {
+                getline(kvfile,line1);
+                pthread_mutex_unlock(&flock);
+            }
+            stringstream ss1(line1);
+            getline( ss1, rT, ',' );
+            getline( ss1, rKey, ',' );
+            getline( ss1, rKeySize, ',' );
+            getline( ss1, rvaluelen, ',' );
+            getline( ss1, rApp, ',' );
+            getline( ss1, rOp, ',' );
+            if (rOp.compare("get") == 0) {
+                Op = 1;
+            } else if (rOp.compare("set") == 0) {
+                Op = 2;
+            } else {
+                Op = 0;
+            }
+        }
+        vl = atoi(rvaluelen.c_str());
         
     } else {
         getline( ss, rT, ',' );
@@ -307,12 +332,12 @@ int Connection::issue_something_trace(double now) {
             Op = 1;
         if (rOp.compare("write") == 0) 
             Op = 2;
+        vl = atoi(rvaluelen.c_str());
     }
 
 
-    int vl = atoi(rvaluelen.c_str());
     if (vl < 8) vl = 8; 
-    
+   
     //if (strcmp(key,"100004781") == 0) {
     //   fprintf(stderr,"ready!\n");
     //}
@@ -380,6 +405,7 @@ int Connection::issue_getsetorset(double now) {
         }
         stringstream ss(line);
         int Op = 0;
+        int vl = 0; 
 
         if (options.twitter_trace == 1) {
             getline( ss, rT, ',' );
@@ -395,13 +421,52 @@ int Connection::issue_getsetorset(double now) {
             } else {
                 Op = 1;
             }
+            while (Op == 0) {
+                string line1;
+                pthread_mutex_lock(&flock);
+                if (kvfile.good()) {
+                    getline(kvfile,line1);
+                    pthread_mutex_unlock(&flock);
+                }
+                stringstream ss1(line1);
+                getline( ss1, rT, ',' );
+                getline( ss1, rKey, ',' );
+                getline( ss1, rKeySize, ',' );
+                getline( ss1, rvaluelen, ',' );
+                getline( ss1, rApp, ',' );
+                getline( ss1, rOp, ',' );
+                if (rOp.compare("get") == 0) {
+                    Op = 1;
+                } else if (rOp.compare("set") == 0) {
+                    Op = 2;
+                } else {
+                    Op = 0;
+                }
+            }
+            vl = atoi(rvaluelen.c_str());
             
-        } else {
+        } else if (options.twitter_trace == 2) {
+            getline( ss, rT, ',' );
+            getline( ss, rKey, ',' );
+            getline( ss, rvaluelen, ',' );
+            getline( ss, rOp, ',' );
+            int op_n = atoi(rOp.c_str());
+
+            if (op_n == 1) 
+                Op = 1;
+            else if (op_n == 0) {
+                Op = 2;
+            }
+            vl = atoi(rvaluelen.c_str()) - 76;
+            vl = vl - strlen(rKey.c_str());
+        }
+        else {
             getline( ss, rT, ',' );
             getline( ss, rApp, ',' );
             getline( ss, rOp, ',' );
             getline( ss, rKey, ',' );
             getline( ss, rvaluelen, ',' );
+            vl = atoi(rvaluelen.c_str());
             if (rOp.compare("read") == 0) 
                 Op = 1;
             if (rOp.compare("write") == 0) 
@@ -409,8 +474,7 @@ int Connection::issue_getsetorset(double now) {
         }
 
 
-        int vl = atoi(rvaluelen.c_str());
-        if (vl < 8) vl = 8; 
+        if (vl < 100) vl = 100; 
         char key[1024];
         char skey[1024];
         memset(key,0,1024);
@@ -421,7 +485,6 @@ int Connection::issue_getsetorset(double now) {
             strncpy(key, options.prefix,strlen(options.prefix));
         }
         strncat(key,skey,strlen(skey));
-        
         //if (strcmp(key,"100004781") == 0) {
         //   fprintf(stderr,"ready!\n");
         //}
