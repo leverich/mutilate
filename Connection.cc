@@ -290,6 +290,8 @@ int Connection::issue_something_trace(double now) {
         getline( ss, rvaluelen, ',' );
         getline( ss, rApp, ',' );
         getline( ss, rOp, ',' );
+        vl = atoi(rvaluelen.c_str());
+        if (vl < 1) vl = 1;
         if (rOp.compare("get") == 0) {
             Op = 1;
         } else if (rOp.compare("set") == 0) {
@@ -312,6 +314,9 @@ int Connection::issue_something_trace(double now) {
             getline( ss1, rvaluelen, ',' );
             getline( ss1, rApp, ',' );
             getline( ss1, rOp, ',' );
+            vl = atoi(rvaluelen.c_str());
+            if (vl < 1) vl = 1;
+
             if (rOp.compare("get") == 0) {
                 Op = 1;
             } else if (rOp.compare("set") == 0) {
@@ -320,7 +325,6 @@ int Connection::issue_something_trace(double now) {
                 Op = 0;
             }
         }
-        vl = atoi(rvaluelen.c_str());
         
     } else {
         getline( ss, rT, ',' );
@@ -336,8 +340,7 @@ int Connection::issue_something_trace(double now) {
     }
 
 
-    if (vl < 8) vl = 8; 
-   
+    if (vl > 524000) vl = 524000;
     //if (strcmp(key,"100004781") == 0) {
     //   fprintf(stderr,"ready!\n");
     //}
@@ -414,36 +417,15 @@ int Connection::issue_getsetorset(double now) {
             getline( ss, rvaluelen, ',' );
             getline( ss, rApp, ',' );
             getline( ss, rOp, ',' );
+            vl = atoi(rvaluelen.c_str());
+            if (vl < 1) vl = 1;
             if (rOp.compare("get") == 0) {
                 Op = 1;
             } else if (rOp.compare("set") == 0) {
                 Op = 2;
             } else {
-                Op = 1;
+                Op = 0;
             }
-            while (Op == 0) {
-                string line1;
-                pthread_mutex_lock(&flock);
-                if (kvfile.good()) {
-                    getline(kvfile,line1);
-                    pthread_mutex_unlock(&flock);
-                }
-                stringstream ss1(line1);
-                getline( ss1, rT, ',' );
-                getline( ss1, rKey, ',' );
-                getline( ss1, rKeySize, ',' );
-                getline( ss1, rvaluelen, ',' );
-                getline( ss1, rApp, ',' );
-                getline( ss1, rOp, ',' );
-                if (rOp.compare("get") == 0) {
-                    Op = 1;
-                } else if (rOp.compare("set") == 0) {
-                    Op = 2;
-                } else {
-                    Op = 0;
-                }
-            }
-            vl = atoi(rvaluelen.c_str());
             
         } else if (options.twitter_trace == 2) {
             getline( ss, rT, ',' );
@@ -474,7 +456,6 @@ int Connection::issue_getsetorset(double now) {
         }
 
 
-        if (vl < 100) vl = 100; 
         char key[1024];
         char skey[1024];
         memset(key,0,1024);
@@ -490,6 +471,10 @@ int Connection::issue_getsetorset(double now) {
         //}
         switch(Op)
         {
+          case 0:
+              fprintf(stderr,"invalid line: %s, vl: %d @T: %d\n",
+                      key,vl,atoi(rT.c_str()));
+              break;
           case 1:
               issue_get_with_len(key, vl, now);
               break;
@@ -497,6 +482,7 @@ int Connection::issue_getsetorset(double now) {
               int index = lrand48() % (1024 * 1024);
               issue_set(key, &random_char[index], vl, now,true);
               break;
+        
         }
   }
   
