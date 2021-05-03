@@ -419,6 +419,7 @@ int Connection::issue_getsetorset(double now) {
             getline( ss, rOp, ',' );
             vl = atoi(rvaluelen.c_str());
             if (vl < 1) vl = 1;
+            if (vl > 524000) vl = 524000;
             if (rOp.compare("get") == 0) {
                 Op = 1;
             } else if (rOp.compare("set") == 0) {
