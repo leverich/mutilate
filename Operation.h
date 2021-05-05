@@ -11,13 +11,13 @@ public:
   double start_time, end_time;
 
   enum type_enum {
-    GET, SET, SASL
+    GET, SET, DELETE, SASL
   };
 
   type_enum type;
 
   string key;
-  // string value;
+  int valuelen;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

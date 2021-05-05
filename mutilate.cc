@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -42,6 +43,9 @@
 
 using namespace std;
 
+ifstream kvfile;
+pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
+
 gengetopt_args_info args;
 char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
 
@@ -57,9 +61,12 @@ struct thread_data {
 #ifdef HAVE_LIBZMQ
   zmq::socket_t *socket;
 #endif
+  int id;
 };
 
 // struct evdns_base *evdns;
+    
+pthread_t pt[1024];
 
 pthread_barrier_t barrier;
 
@@ -157,7 +164,11 @@ void agent() {
   zmq::context_t context(1);
 
   zmq::socket_t socket(context, ZMQ_REP);
-  socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  if (atoi(args.agent_port_arg) == -1) {
+    socket.bind(string("ipc:///tmp/memcached.sock").c_str());
+  } else {
+    socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  }
 
   while (true) {
     zmq::message_t request;
@@ -470,8 +481,13 @@ int main(int argc, char **argv) {
   pthread_barrier_init(&barrier, NULL, options.threads);
 
   vector<string> servers;
-  for (unsigned int s = 0; s < args.server_given; s++)
-    servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  for (unsigned int s = 0; s < args.server_given; s++) {
+    if (options.unix_socket) {
+        servers.push_back(string(args.server_arg[s]));
+    } else {
+        servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+    }
+  }
 
   ConnectionStats stats;
 
@@ -651,8 +667,12 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
+  if (options.read_file) {
+      kvfile.open(options.file_name);
+      
+  }
+
   if (options.threads > 1) {
-    pthread_t pt[options.threads];
     struct thread_data td[options.threads];
 #ifdef __clang__
     vector<string>* ts = static_cast<vector<string>*>(alloca(sizeof(vector<string>) * options.threads));
@@ -666,6 +686,7 @@ void go(const vector<string>& servers, options_t& options,
 
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
+      td[t].id = t;
 #ifdef HAVE_LIBZMQ
       td[t].socket = socket;
 #endif
@@ -711,6 +732,7 @@ void go(const vector<string>& servers, options_t& options,
 
       if (pthread_create(&pt[t], &attr, thread_main, &td[t]))
         DIE("pthread_create() failed");
+      usleep(t);
     }
 
     for (int t = 0; t < options.threads; t++) {
@@ -746,9 +768,28 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 }
 
+int stick_this_thread_to_core(int core_id) {
+   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+   if (core_id < 0 || core_id >= num_cores)
+      return EINVAL;
+
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+   pthread_t current_thread = pthread_self();    
+   return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
-
+  
+  int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  int res = stick_this_thread_to_core(td->id % num_cores);
+  if (res != 0) {
+        DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+                  td->id, strerror(res));
+  }
   ConnectionStats *cs = new ConnectionStats();
 
   do_mutilate(*td->servers, *td->options, *cs, td->master
@@ -1058,7 +1099,37 @@ void args_to_options(options_t* options) {
   //  else
   options->records = args.records_arg / options->server_given;
 
+  options->queries = args.queries_arg / options->server_given;
+  
+  options->misswindow = args.misswindow_arg;
+
+  options->use_assoc = args.assoc_given;
+  options->assoc = args.assoc_arg;
+  options->twitter_trace = args.twitter_trace_arg;
+
+  options->unix_socket = args.unix_socket_given;
+  options->successful_queries = args.successful_given;
   options->binary = args.binary_given;
+  options->redis = args.redis_given;
+ 
+  if (options->use_assoc && !options->redis)
+        DIE("assoc must be used with redis");
+
+  options->read_file = args.read_file_given;
+  if (args.read_file_given)
+    strcpy(options->file_name, args.read_file_arg);
+
+  if (args.prefix_given)
+      strcpy(options->prefix,args.prefix_arg);
+
+  //getset mode (first issue get, then set same key if miss)
+  options->getset = args.getset_given;
+  options->getsetorset = args.getsetorset_given;
+  //delete 90 percent of keys after halfway
+  //model workload in Rumble and Ousterhout - log structured memory
+  //for dram based storage
+  options->delete90 = args.delete90_given;
+
   options->sasl = args.username_given;
   
   if (args.password_given)

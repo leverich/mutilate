@@ -4,6 +4,8 @@
 
 #include <queue>
 #include <string>
+#include <fstream>
+#include <map>
 
 #include <event2/bufferevent.h>
 #include <event2/dns.h>
@@ -17,6 +19,7 @@
 #include "Generator.h"
 #include "Operation.h"
 #include "util.h"
+
 
 #include "Protocol.h"
 
@@ -75,6 +78,7 @@ private:
     IDLE,
     WAITING_FOR_GET,
     WAITING_FOR_SET,
+    WAITING_FOR_DELETE,
     MAX_READ_STATE,
   };
 
@@ -89,8 +93,23 @@ private:
   read_state_enum read_state;
   write_state_enum write_state;
 
+  //need to keep value length for read key
+  map<string,string> key_len;
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
+
+  //was the last op a miss
+  char last_key[256];
+  int last_miss;
+
+  //trace format variables
+  double r_time; // time in seconds
+  int r_appid; // prefix minus ':' char
+  int r_type;  //1 = get, 2 = set
+  int r_ksize; //key size
+  int r_vsize; //-1 or size of value if hit
+  int r_key; //op->key as int
+  int r_hit; //1 if hit, 0 if miss
 
   Protocol *prot;
   Generator *valuesize;
@@ -101,24 +120,34 @@ private:
 
   // state machine functions / event processing
   void pop_op();
-  void finish_op(Operation *op);
+  //void finish_op(Operation *op);
+  void finish_op(Operation *op,int was_hit);
   void issue_something(double now = 0.0);
+  int issue_something_trace(double now = 0.0);
+  void issue_getset(double now = 0.0);
+  int issue_getsetorset(double now = 0.0);
   void drive_write_machine(double now = 0.0);
 
   // request functions
   void issue_sasl();
   void issue_get(const char* key, double now = 0.0);
+  void issue_get_with_len(const char* key, int valuelen, double now = 0.0);
   void issue_set(const char* key, const char* value, int length,
-                 double now = 0.0);
+                 double now = 0.0, bool is_access = false);
+  void issue_delete90(double now = 0.0);
 
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);
   int set_request_binary(const char* key, const char* value, int length);
+  int set_request_resp(const char* key, const char* value, int length);
+  
   int get_request_ascii(const char* key);
   int get_request_binary(const char* key);
+  int get_request_resp(const char* key);
 
   bool consume_binary_response(evbuffer *input);
   bool consume_ascii_line(evbuffer *input, bool &done);
+  bool consume_resp_line(evbuffer *input, bool &done);
 };
 
 #endif
