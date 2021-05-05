@@ -38,10 +38,12 @@
 #include "log.h"
 #include "mutilate.h"
 #include "util.h"
+#include "blockingconcurrentqueue.h"
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 using namespace std;
+using namespace moodycamel;
 
 ifstream kvfile;
 pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
@@ -62,6 +64,12 @@ struct thread_data {
   zmq::socket_t *socket;
 #endif
   int id;
+  BlockingConcurrentQueue<string> *trace_queue;
+};
+
+struct reader_data {
+  BlockingConcurrentQueue<string> *trace_queue;
+  string trace_filename;
 };
 
 // struct evdns_base *evdns;
@@ -82,13 +90,14 @@ void go(const vector<string> &servers, options_t &options,
 );
 
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats, bool master = true
+                 ConnectionStats &stats,BlockingConcurrentQueue<string> *trace_queue,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
 );
 void args_to_options(options_t* options);
 void* thread_main(void *arg);
+void* reader_thread(void *arg);
 
 #ifdef HAVE_LIBZMQ
 static std::string s_recv (zmq::socket_t &socket) {
@@ -667,8 +676,14 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
+  BlockingConcurrentQueue<string> *trace_queue = new BlockingConcurrentQueue<string>;
+  struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
+  rdata->trace_queue = trace_queue;
   if (options.read_file) {
-      kvfile.open(options.file_name);
+      pthread_t tid;
+      rdata->trace_filename = options.file_name; 
+      pthread_create(&tid, NULL,reader_thread,rdata);
+      usleep(10);
       
   }
 
@@ -684,9 +699,11 @@ void go(const vector<string>& servers, options_t& options,
     int current_cpu = -1;
 #endif
 
+
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
       td[t].id = t;
+      td[t].trace_queue = trace_queue;
 #ifdef HAVE_LIBZMQ
       td[t].socket = socket;
 #endif
@@ -742,7 +759,7 @@ void go(const vector<string>& servers, options_t& options,
       delete cs;
     }
   } else if (options.threads == 1) {
-    do_mutilate(servers, options, stats, true
+    do_mutilate(servers, options, stats, trace_queue, true
 #ifdef HAVE_LIBZMQ
 , socket
 #endif
@@ -781,9 +798,26 @@ int stick_this_thread_to_core(int core_id) {
    return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
 }
 
+void* reader_thread(void *arg) {
+  struct reader_data *rdata = (struct reader_data *) arg;
+  BlockingConcurrentQueue<string> *trace_queue = (BlockingConcurrentQueue<string>*) rdata->trace_queue;
+ 
+  ifstream trace_file;
+  trace_file.open(rdata->trace_filename);
+  while (trace_file.good()) {
+    string line;
+    getline(trace_file,line);
+    trace_queue->enqueue(line);
+  }
+  string eof = "EOF";
+  for (int i = 0; i < 1000; i++) {
+    trace_queue->enqueue(eof);
+  }
+  return NULL;
+}
+
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
-  
   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
   int res = stick_this_thread_to_core(td->id % num_cores);
   if (res != 0) {
@@ -792,7 +826,7 @@ void* thread_main(void *arg) {
   }
   ConnectionStats *cs = new ConnectionStats();
 
-  do_mutilate(*td->servers, *td->options, *cs, td->master
+  do_mutilate(*td->servers, *td->options, *cs,  td->trace_queue, td->master
 #ifdef HAVE_LIBZMQ
 , td->socket
 #endif
@@ -802,7 +836,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, bool master
+                 ConnectionStats& stats, BlockingConcurrentQueue<string> *trace_queue, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -839,6 +873,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   vector<Connection*> connections;
   vector<Connection*> server_lead;
 
+
   for (auto s: servers) {
     // Split args.server_arg[s] into host:port using strtok().
     char *s_copy = new char[s.length() + 1];
@@ -860,6 +895,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     for (int c = 0; c < conns; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                        trace_queue,
                                         args.agentmode_given ? false :
                                         true);
       connections.push_back(conn);

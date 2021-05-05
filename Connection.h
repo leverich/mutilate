@@ -19,11 +19,11 @@
 #include "Generator.h"
 #include "Operation.h"
 #include "util.h"
-
-
+#include "blockingconcurrentqueue.h"
 #include "Protocol.h"
 
 using namespace std;
+using namespace moodycamel;
 
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr);
 void bev_read_cb(struct bufferevent *bev, void *ptr);
@@ -36,6 +36,7 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
+             BlockingConcurrentQueue<string> *a_trace_queue,
              bool sampling = true);
   ~Connection();
 
@@ -102,6 +103,8 @@ private:
   char last_key[256];
   int last_miss;
 
+  int eof;
+
   //trace format variables
   double r_time; // time in seconds
   int r_appid; // prefix minus ':' char
@@ -117,6 +120,8 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
   std::queue<Operation> op_queue;
+
+  BlockingConcurrentQueue<string> *trace_queue;
 
   // state machine functions / event processing
   void pop_op();

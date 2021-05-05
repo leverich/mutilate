@@ -22,6 +22,10 @@
 #include <sstream>
 #include <unistd.h>
 #include <string.h>
+#include "blockingconcurrentqueue.h"
+
+
+using namespace moodycamel;
 
 extern ifstream kvfile;
 extern pthread_mutex_t flock;
@@ -31,13 +35,17 @@ extern pthread_mutex_t flock;
  */
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
-                       bool sampling) :
+                       BlockingConcurrentQueue<string>* a_trace_queue,
+                       bool sampling ) :
   start_time(0), stats(sampling), options(_options),
   hostname(_hostname), port(_port), base(_base), evdns(_evdns)
 {
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
-  
+
+  trace_queue = a_trace_queue;
+  eof = 0;
+
   keygen = new KeyGenerator(keysize, options.records);
   //if (options.read_file && (options.getset || options.getsetorset)) {
   //    kvfile.open(options.file_name);
@@ -357,6 +365,7 @@ int Connection::issue_something_trace(double now) {
     return ret;
 }
 
+
 /**
  * Get/Set or Set Style
  * If a GET command: Issue a get first, if not found then set
@@ -366,7 +375,7 @@ int Connection::issue_getsetorset(double now) {
  
   int ret = 0;
 
-  if (!options.read_file && !kvfile.is_open())
+  if (!options.read_file)
   {
         string keystr;
         char key[256];
@@ -397,6 +406,14 @@ int Connection::issue_getsetorset(double now) {
         string rKeySize;
         string rvaluelen;
 
+    
+        trace_queue->wait_dequeue(line);
+        if (line.compare("EOF") == 0) {
+            eof = 1;
+            return 1;
+        }
+
+        /*
         pthread_mutex_lock(&flock);
         if (kvfile.good()) {
             getline(kvfile,line);
@@ -406,6 +423,7 @@ int Connection::issue_getsetorset(double now) {
             pthread_mutex_unlock(&flock);
             return 1;
         }
+        */
         stringstream ss(line);
         int Op = 0;
         int vl = 0; 
@@ -720,9 +738,6 @@ bool Connection::check_exit_condition(double now) {
   if (now == 0.0) now = get_time();
 
   if (options.read_file) {
-    pthread_mutex_lock(&flock);
-    int eof = kvfile.eof();
-    pthread_mutex_unlock(&flock);
     if (eof) {
         return true;
     }
