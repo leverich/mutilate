@@ -64,11 +64,11 @@ struct thread_data {
   zmq::socket_t *socket;
 #endif
   int id;
-  BlockingConcurrentQueue<string> *trace_queue;
+  ConcurrentQueue<string> *trace_queue;
 };
 
 struct reader_data {
-  BlockingConcurrentQueue<string> *trace_queue;
+  ConcurrentQueue<string> *trace_queue;
   string trace_filename;
 };
 
@@ -90,7 +90,7 @@ void go(const vector<string> &servers, options_t &options,
 );
 
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats,BlockingConcurrentQueue<string> *trace_queue,  bool master = true
+                 ConnectionStats &stats,ConcurrentQueue<string> *trace_queue,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
@@ -676,7 +676,7 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
-  BlockingConcurrentQueue<string> *trace_queue = new BlockingConcurrentQueue<string>;
+  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>;
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
   if (options.read_file) {
@@ -800,7 +800,7 @@ int stick_this_thread_to_core(int core_id) {
 
 void* reader_thread(void *arg) {
   struct reader_data *rdata = (struct reader_data *) arg;
-  BlockingConcurrentQueue<string> *trace_queue = (BlockingConcurrentQueue<string>*) rdata->trace_queue;
+  ConcurrentQueue<string> *trace_queue = (ConcurrentQueue<string>*) rdata->trace_queue;
  
   ifstream trace_file;
   trace_file.open(rdata->trace_filename);
@@ -836,7 +836,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, BlockingConcurrentQueue<string> *trace_queue, bool master 
+                 ConnectionStats& stats, ConcurrentQueue<string> *trace_queue, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif

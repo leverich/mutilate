@@ -36,7 +36,7 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             BlockingConcurrentQueue<string> *a_trace_queue,
+             ConcurrentQueue<string> *a_trace_queue,
              bool sampling = true);
   ~Connection();
 
@@ -121,7 +121,7 @@ private:
   Generator *iagen;
   std::queue<Operation> op_queue;
 
-  BlockingConcurrentQueue<string> *trace_queue;
+  ConcurrentQueue<string> *trace_queue;
 
   // state machine functions / event processing
   void pop_op();
