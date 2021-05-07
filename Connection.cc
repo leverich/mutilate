@@ -1021,13 +1021,20 @@ void Connection::read_callback() {
     case WAITING_FOR_SET:
       
       assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done, found, obj_size)) return;
+      full_read = prot->handle_response(input, done, found, obj_size);
+      if (!full_read) {
+
+        char key[256];
+        char log[1024];
+        string keystr = op->key;
+        strcpy(key, keystr.c_str());
+        int valuelen = op->valuelen;
+        sprintf(log,"ERROR SETTING: %s,%d\n",key,valuelen);
+        write(2,log,strlen(log));
+        return; 
+      }
       
 
-      //char log[256];
-      //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
-      //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
-      //write(2,log,strlen(log));
       
       finish_op(op,1);
       break;
