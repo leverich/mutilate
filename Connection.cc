@@ -19,6 +19,7 @@
 #include "binary_protocol.h"
 #include "util.h"
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <unistd.h>
 #include <string.h>
@@ -445,6 +446,10 @@ int Connection::issue_getsetorset(double now) {
                 } else {
                     Op = 0;
                 }
+                
+                //char buf[1024];
+                //sprintf(buf,"%s,%d\n",rKey.c_str(),vl);
+                //write(1,buf,strlen(buf));
                 
             } else if (options.twitter_trace == 2) {
                 getline( ss, rT, ',' );
