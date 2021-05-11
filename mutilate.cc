@@ -21,6 +21,10 @@
 #include <event2/thread.h>
 #include <event2/util.h>
 
+
+#include "common.h" //for zstd
+#include "zstd.h" //shippped with mutilate
+
 #include "config.h"
 
 #ifdef HAVE_LIBZMQ
@@ -798,20 +802,150 @@ int stick_this_thread_to_core(int core_id) {
    return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
 }
 
+bool hasEnding (string const &fullString, string const &ending) {
+    if (fullString.length() >= ending.length()) {
+        return (0 == fullString.compare (fullString.length() - ending.length(), ending.length(), ending));
+    } else {
+        return false;
+    }
+}
+
+static char *get_stream(ZSTD_DCtx* dctx, FILE *fin, size_t const buffInSize, void* const buffIn, size_t const buffOutSize, void* const buffOut) {
+    /* This loop assumes that the input file is one or more concatenated zstd
+     * streams. This example won't work if there is trailing non-zstd data at
+     * the end, but streaming decompression in general handles this case.
+     * ZSTD_decompressStream() returns 0 exactly when the frame is completed,
+     * and doesn't consume input after the frame.
+     */
+    size_t const toRead = buffInSize;
+    size_t read;
+    size_t lastRet = 0;
+    int isEmpty = 1;
+    if ( (read = fread_orDie(buffIn, toRead, fin)) ) {
+        isEmpty = 0;
+        ZSTD_inBuffer input = { buffIn, read, 0 };
+        /* Given a valid frame, zstd won't consume the last byte of the frame
+         * until it has flushed all of the decompressed data of the frame.
+         * Therefore, instead of checking if the return code is 0, we can
+         * decompress just check if input.pos < input.size.
+         */
+        char *trace = (char*)malloc(buffOutSize*2);
+        memset(trace,0,buffOutSize+1);
+        size_t tracelen = buffOutSize+1;
+        size_t total = 0;
+        while (input.pos < input.size) {
+            ZSTD_outBuffer output = { buffOut, buffOutSize, 0 };
+            /* The return code is zero if the frame is complete, but there may
+             * be multiple frames concatenated together. Zstd will automatically
+             * reset the context when a frame is complete. Still, calling
+             * ZSTD_DCtx_reset() can be useful to reset the context to a clean
+             * state, for instance if the last decompression call returned an
+             * error.
+             */
+            
+            size_t const ret = ZSTD_decompressStream(dctx, &output , &input);
+            
+            if (output.pos + total > tracelen) {
+                trace = (char*)realloc(trace,(output.pos+total+1));
+                tracelen = (output.pos+total+1);
+            }
+            strncat(trace,(const char*)buffOut,output.pos); 
+            total += output.pos;
+
+            lastRet = ret;
+        }
+        int idx = total;
+        while (trace[idx] != '\n') {
+            idx--;
+        }
+        trace[idx] = 0;
+        trace[idx+1] = 0;
+        return trace;
+
+    }
+
+    if (isEmpty) {
+        fprintf(stderr, "input is empty\n");
+        return NULL;
+    }
+
+    if (lastRet != 0) {
+        /* The last return value from ZSTD_decompressStream did not end on a
+         * frame, but we reached the end of the file! We assume this is an
+         * error, and the input was truncated.
+         */
+        fprintf(stderr, "EOF before end of stream: %zu\n", lastRet);
+        exit(1);
+    }
+    return NULL;
+
+}
+
 void* reader_thread(void *arg) {
   struct reader_data *rdata = (struct reader_data *) arg;
   ConcurrentQueue<string> *trace_queue = (ConcurrentQueue<string>*) rdata->trace_queue;
  
-  ifstream trace_file;
-  trace_file.open(rdata->trace_filename);
-  while (trace_file.good()) {
-    string line;
-    getline(trace_file,line);
-    trace_queue->enqueue(line);
-  }
-  string eof = "EOF";
-  for (int i = 0; i < 1000; i++) {
-    trace_queue->enqueue(eof);
+  if (hasEnding(rdata->trace_filename,".zst")) {
+        //init
+        const char *filename = rdata->trace_filename.c_str();
+        FILE* const fin  = fopen_orDie(filename, "rb");
+        size_t const buffInSize = ZSTD_DStreamInSize()*1000;
+        void*  const buffIn  = malloc_orDie(buffInSize);
+        size_t const buffOutSize = ZSTD_DStreamOutSize()*1000;
+        void*  const buffOut = malloc_orDie(buffOutSize);
+
+        ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+        CHECK(dctx != NULL, "ZSTD_createDCtx() failed!");
+        //char *leftover = malloc(buffOutSize);
+        //memset(leftover,0,buffOutSize);
+		//char *trace = (char*)decompress(filename);
+        uint64_t nwrites = 0;
+        uint64_t n = 0;
+        char *trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
+        while (trace != NULL) {
+            char *ftrace = trace;
+            char *line = NULL;
+            char *line_p = (char*)calloc(2048,sizeof(char));
+            while ((line = strsep(&trace,"\n"))) {
+                if (strlen(line) < 2048) {
+                    strncpy(line_p,line,strlen(line));
+                }
+                string full_line(line);
+                trace_queue->enqueue(full_line);
+                n++;
+                if (n % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, writes: %lu\n",n,nwrites);
+
+            }
+            free(line_p);
+            free(ftrace);
+            trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
+        }
+  	    string eof = "EOF";
+  	    for (int i = 0; i < 1000; i++) {
+  	        trace_queue->enqueue(eof);
+  	    }
+        if (trace) {
+            free(trace);
+        }
+        ZSTD_freeDCtx(dctx);
+        fclose_orDie(fin);
+        free(buffIn);
+        free(buffOut);
+
+	
+  } else {
+ 
+  	ifstream trace_file;
+  	trace_file.open(rdata->trace_filename);
+  	while (trace_file.good()) {
+  	  string line;
+  	  getline(trace_file,line);
+  	  trace_queue->enqueue(line);
+  	}
+  	string eof = "EOF";
+  	for (int i = 0; i < 1000; i++) {
+  	  trace_queue->enqueue(eof);
+  	}
   }
   return NULL;
 }

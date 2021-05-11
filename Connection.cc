@@ -1024,13 +1024,13 @@ void Connection::read_callback() {
       full_read = prot->handle_response(input, done, found, obj_size);
       if (!full_read) {
 
-        char key[256];
-        char log[1024];
-        string keystr = op->key;
-        strcpy(key, keystr.c_str());
-        int valuelen = op->valuelen;
-        sprintf(log,"ERROR SETTING: %s,%d\n",key,valuelen);
-        write(2,log,strlen(log));
+        //char key[256];
+        //char log[1024];
+        //string keystr = op->key;
+        //strcpy(key, keystr.c_str());
+        //int valuelen = op->valuelen;
+        //sprintf(log,"ERROR SETTING: %s,%d\n",key,valuelen);
+        //write(2,log,strlen(log));
         return; 
       }
       
