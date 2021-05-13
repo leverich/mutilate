@@ -508,6 +508,7 @@ int Connection::issue_getsetorset(double now) {
                   break;
             
             }
+
         }
   }
   

@@ -680,7 +680,7 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
-  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>;
+  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(200000000);
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
   if (options.read_file) {
@@ -911,9 +911,14 @@ void* reader_thread(void *arg) {
                     strncpy(line_p,line,strlen(line));
                 }
                 string full_line(line);
-                trace_queue->enqueue(full_line);
+                bool res = trace_queue->try_enqueue(full_line);
+                while (!res) {
+                    usleep(10);
+                    res = trace_queue->try_enqueue(full_line);
+                    nwrites++;
+                }
                 n++;
-                if (n % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, writes: %lu\n",n,nwrites);
+                if (n % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, waits: %lu\n",n,nwrites);
 
             }
             free(line_p);
