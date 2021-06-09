@@ -680,13 +680,17 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
-  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(200000000);
+  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
+  memset(rdata,0,sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
+  pthread_t rtid;
   if (options.read_file) {
-      pthread_t tid;
       rdata->trace_filename = options.file_name; 
-      pthread_create(&tid, NULL,reader_thread,rdata);
+      int error = 0;
+      if ((error = pthread_create(&rtid, NULL,reader_thread,rdata)) != 0) {
+        printf("reader thread failed to be created with error code %d\n", error);
+      }
       usleep(10);
       
   }
@@ -762,6 +766,8 @@ void go(const vector<string>& servers, options_t& options,
       stats.accumulate(*cs);
       delete cs;
     }
+    delete trace_queue;
+
   } else if (options.threads == 1) {
     do_mutilate(servers, options, stats, trace_queue, true
 #ifdef HAVE_LIBZMQ
@@ -952,6 +958,7 @@ void* reader_thread(void *arg) {
   	  trace_queue->enqueue(eof);
   	}
   }
+
   return NULL;
 }
 

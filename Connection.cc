@@ -876,7 +876,9 @@ void Connection::drive_write_machine(double now) {
   double delay;
   struct timeval tv;
 
-  if (check_exit_condition(now)) return;
+  if (check_exit_condition(now)) {
+      return;
+  }
 
   while (1) {
     switch (write_state) {
