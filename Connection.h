@@ -40,6 +40,8 @@ public:
              bool sampling = true);
   ~Connection();
 
+  int do_connect();
+
   double start_time; // Time when this connection began operations.
   ConnectionStats stats;
   options_t options;

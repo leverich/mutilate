@@ -913,9 +913,7 @@ void* reader_thread(void *arg) {
             char *line = NULL;
             char *line_p = (char*)calloc(2048,sizeof(char));
             while ((line = strsep(&trace,"\n"))) {
-                if (strlen(line) < 2048) {
-                    strncpy(line_p,line,strlen(line));
-                }
+                strncpy(line_p,line,2048);
                 string full_line(line);
                 bool res = trace_queue->try_enqueue(full_line);
                 while (!res) {
@@ -1039,12 +1037,34 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     int conns = args.measure_connections_given ? args.measure_connections_arg :
       options.connections;
 
+    srand(time(NULL));
     for (int c = 0; c < conns; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
                                         trace_queue,
                                         args.agentmode_given ? false :
                                         true);
-      connections.push_back(conn);
+      int tries = 20;
+      int connected = 0;
+      int s = 2;
+      for (int i = 0; i < tries; i++) {
+       
+        int ret = conn->do_connect();
+        if (ret) {
+            connected = 1;
+            break;
+        }
+        s *= 2;
+        int d = s + rand() % 100;
+        
+        fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
+        usleep(d);
+      } 
+      if (connected) {
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn: %d, not connected!!\n",c);
+
+      }
       if (c == 0) server_lead.push_back(conn);
     }
   }

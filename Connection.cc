@@ -48,10 +48,6 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   eof = 0;
 
   keygen = new KeyGenerator(keysize, options.records);
-  //if (options.read_file && (options.getset || options.getsetorset)) {
-  //    kvfile.open(options.file_name);
-  //    
-  //}
 
   if (options.lambda <= 0) {
     iagen = createGenerator("0");
@@ -68,44 +64,38 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   last_miss = 0;
 
+
+  timer = evtimer_new(base, timer_cb, this);
+}
+
+int Connection::do_connect() {
+
+  int connected = 0;
   if (options.unix_socket) {
-    srand(time(NULL));
-    int tries = 10000;
-    int connected = 0;
-    int s = 1;
-    for (int i = 0; i < tries; i++) {
   
-        bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-        bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
-        bufferevent_enable(bev, EV_READ | EV_WRITE);
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
 
+    struct sockaddr_un sin;
+    memset(&sin, 0, sizeof(sin));
+    sin.sun_family = AF_LOCAL;
+    strcpy(sin.sun_path, hostname.c_str());
 
-        struct sockaddr_un sin;
-        memset(&sin, 0, sizeof(sin));
-        sin.sun_family = AF_LOCAL;
-        strcpy(sin.sun_path, hostname.c_str());
+    static int  addrlen;
+    addrlen = sizeof(sin);
 
-        static int  addrlen;
-        addrlen = sizeof(sin);
-
-        if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) == 0) {
-            connected = 1;
-            if (options.binary) {
-              prot = new ProtocolBinary(options, this, bev);
-            } else if (options.redis) {
-              prot = new ProtocolRESP(options, this, bev);
-            } else {
-              prot = new ProtocolAscii(options, this, bev);
-            }
-            break;
+    if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) == 0) {
+        connected = 1;
+        if (options.binary) {
+          prot = new ProtocolBinary(options, this, bev);
+        } else if (options.redis) {
+          prot = new ProtocolRESP(options, this, bev);
+        } else {
+          prot = new ProtocolAscii(options, this, bev);
         }
+    } else {
         bufferevent_free(bev);
-        s = rand() % 10;
-        usleep(s);
-
-    }
-    if (connected == 0) {
-        DIE("bufferevent_socket_connect()");
     }
   } else {
     bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
@@ -119,14 +109,16 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     } else {
       prot = new ProtocolAscii(options, this, bev);
     }
-      if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
-                                            hostname.c_str(),
-                                            atoi(port.c_str()))) {
-      DIE("bufferevent_socket_connect_hostname()");
+    if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
+                                          hostname.c_str(),
+                                          atoi(port.c_str())) == 0) {
+        connected = 1;
+    } else {
+        bufferevent_free(bev);
+        connected = 0;
     }
   }
-
-  timer = evtimer_new(base, timer_cb, this);
+  return connected;
 }
 
 /**
@@ -188,15 +180,10 @@ void Connection::start_loading() {
  */
 void Connection::issue_something(double now) {
   char key[256];
-  char skey[256];
   memset(key,0,256);
-  memset(skey,0,256);
   // FIXME: generate key distribution here!
   string keystr = keygen->generate(lrand48() % options.records);
-  strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
-  if (args.prefix_given)
-	strncpy(key, options.prefix,strlen(options.prefix));
-  strncat(key,skey,strlen(skey));
+  strncpy(key, keystr.c_str(),255);
 
   if (drand48() < options.update) {
     int index = lrand48() % (1024 * 1024);
@@ -217,17 +204,11 @@ void Connection::issue_getset(double now) {
     {
         string keystr;
         char key[256];
-        char skey[256];
         memset(key,0,256);
-        memset(skey,0,256);
         keystr = keygen->generate(lrand48() % options.records);
-        strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
-        if (args.prefix_given) {
-          strncpy(key, options.prefix,strlen(options.prefix));
-        }
-        strncat(key,skey,strlen(skey));
+        strncpy(key, keystr.c_str(),255);
         
-        char log[256];
+        char log[1024];
         int length = valuesize->generate();
         sprintf(log,"%s,%d\n",key,length);
         write(2,log,strlen(log));
@@ -256,13 +237,8 @@ void Connection::issue_getset(double now) {
         int vl = atoi(rvaluelen.c_str());
         
         char key[256];
-        char skey[256];
         memset(key,0,256);
-        memset(skey,0,256);
-        strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
-        if (args.prefix_given)
-          strncpy(key, options.prefix,strlen(options.prefix));
-        strncat(key,skey,strlen(skey));
+        strncpy(key, rKey.c_str(),255);
         issue_get_with_len(key, vl, now);
     }
 
@@ -380,17 +356,11 @@ int Connection::issue_getsetorset(double now) {
   {
         string keystr;
         char key[256];
-        char skey[256];
         memset(key,0,256);
-        memset(skey,0,256);
         keystr = keygen->generate(lrand48() % options.records);
-        strncpy(skey, keystr.c_str(),strlen(keystr.c_str()));
-        if (args.prefix_given)
-            strncpy(key, options.prefix,strlen(options.prefix));
-
-        strncat(key,skey,strlen(skey));
+        strncpy(key, keystr.c_str(),255);
         
-        char log[256];
+        char log[1024];
         int length = valuesize->generate();
         sprintf(log,"%s,%d\n",key,length);
         write(2,log,strlen(log));
@@ -480,19 +450,10 @@ int Connection::issue_getsetorset(double now) {
             }
 
 
-            char key[1024];
-            char skey[1024];
-            memset(key,0,1024);
-            memset(skey,0,1024);
-            strncpy(skey, rKey.c_str(),strlen(rKey.c_str()));
+            char key[256];
+            memset(key,0,256);
+            strncpy(key, rKey.c_str(),255);
 
-            if (args.prefix_given) {
-                strncpy(key, options.prefix,strlen(options.prefix));
-            }
-            strncat(key,skey,strlen(skey));
-            //if (strcmp(key,"100004781") == 0) {
-            //   fprintf(stderr,"ready!\n");
-            //}
             switch(Op)
             {
               case 0:
@@ -799,7 +760,8 @@ void Connection::event_callback(short events) {
     int err = bufferevent_socket_get_dns_error(bev);
     //if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
     if (err) fprintf(stderr,"DNS error: %s", evutil_gai_strerror(err));
-    return;
+    fprintf(stderr,"Got an error: %s\n",
+        evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
 
     //stats.print_header();
     //stats.print_stats("read",   stats.get_sampler);
@@ -827,8 +789,9 @@ void Connection::event_callback(short events) {
     //printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
     //       stats.tx_bytes,
     //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
-
-    DIE("BEV_EVENT_ERROR: %s", strerror(errno));
+    
+    //if (
+    //DIE("BEV_EVENT_ERROR: %s", strerror(errno));
 
   } else if (events & BEV_EVENT_EOF) {
     //stats.print_header();
@@ -1101,6 +1064,7 @@ void Connection::timer_callback() { drive_write_machine(); }
 
 /* The follow are C trampolines for libevent callbacks. */
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr) {
+
   Connection* conn = (Connection*) ptr;
   conn->event_callback(events);
 }

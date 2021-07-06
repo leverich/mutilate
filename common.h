@@ -19,7 +19,7 @@
 #include <string.h>    // strerror
 #include <errno.h>     // errno
 #include <sys/stat.h>  // stat
-#include <zstd.h>
+#include "zstd.h"
 
 /*
  * Define the returned error code from utility functions.
