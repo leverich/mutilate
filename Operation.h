@@ -18,6 +18,9 @@ public:
 
   string key;
   int valuelen;
+  uint32_t opaque;
+  size_t hv;
+  pthread_mutex_t *lock;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

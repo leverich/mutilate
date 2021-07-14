@@ -46,7 +46,7 @@
  *   fprintf(stderr,"--\n");
  *
  */
-int ProtocolRESP::set_request(const char* key, const char* value, int len) {
+int ProtocolRESP::set_request(const char* key, const char* value, int len, uint32_t opaque) {
  
   //need to make the real value
   char *val = (char*)malloc(len*sizeof(char)+1);
@@ -78,7 +78,7 @@ int ProtocolRESP::set_request(const char* key, const char* value, int len) {
 /**
  * Send a RESP get request.
  */
-int ProtocolRESP::get_request(const char* key) {
+int ProtocolRESP::get_request(const char* key, uint32_t opaque) {
   
   //check if we should use assoc
   if (opts.use_assoc && strlen(key) > ((unsigned int)(opts.assoc+1)) )
@@ -188,7 +188,8 @@ int ProtocolRESP::delete90_request() {
  *
  *
  */
-bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
+bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size, uint32_t &opaque) {
+  opaque = 0;
 
   char *buf = NULL;
   char *databuf = NULL;
@@ -353,7 +354,7 @@ bool ProtocolRESP::handle_response(evbuffer *input, bool &done, bool &found, int
 /**
  * Send an ascii get request.
  */
-int ProtocolAscii::get_request(const char* key) {
+int ProtocolAscii::get_request(const char* key, uint32_t opaque) {
   int l;
   l = evbuffer_add_printf(
     bufferevent_get_output(bev), "get %s\r\n", key);
@@ -366,7 +367,7 @@ int ProtocolAscii::get_request(const char* key) {
 /**
  * Send an ascii set request.
  */
-int ProtocolAscii::set_request(const char* key, const char* value, int len) {
+int ProtocolAscii::set_request(const char* key, const char* value, int len, uint32_t opaque) {
   int l;
   l = evbuffer_add_printf(bufferevent_get_output(bev),
                           "set %s 0 0 %d\r\n", key, len);
@@ -397,7 +398,8 @@ int ProtocolAscii::delete90_request() {
 /**
  * Handle an ascii response.
  */
-bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
+bool ProtocolAscii::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size, uint32_t &opaque) {
+  opaque = 0;
   char *buf = NULL;
   int len;
   size_t n_read_out;
@@ -521,19 +523,21 @@ bool ProtocolBinary::setup_connection_r(evbuffer* input) {
 
   bool b,c;
   int obj_size;
-  return handle_response(input, b, c, obj_size);
+  uint32_t opaque;
+  return handle_response(input, b, c, obj_size, opaque);
 }
 
 /**
  * Send a binary get request.
  */
-int ProtocolBinary::get_request(const char* key) {
+int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
   uint16_t keylen = strlen(key);
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_GET, htons(keylen),
                         0x00, 0x00, {htons(0)},
                         htonl(keylen) };
+  h.opaque = htonl(opaque);
 
   bufferevent_write(bev, &h, 24); // size does not include extras
   bufferevent_write(bev, key, keylen);
@@ -545,14 +549,14 @@ int ProtocolBinary::get_request(const char* key) {
 /**
  * Send a binary set request.
  */
-int ProtocolBinary::set_request(const char* key, const char* value, int len) {
+int ProtocolBinary::set_request(const char* key, const char* value, int len, uint32_t opaque) {
   uint16_t keylen = strlen(key);
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_SET, htons(keylen),
                         0x08, 0x00, {htons(0)},
                         htonl(keylen + 8 + len) };
-
+  h.opaque = htonl(opaque);
   bufferevent_write(bev, &h, 32); // With extras
   bufferevent_write(bev, key, keylen);
   bufferevent_write(bev, value, len);
@@ -574,7 +578,7 @@ int ProtocolBinary::delete90_request() {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size) {
+bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size, uint32_t &opaque) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -587,6 +591,7 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
   if (length < targetLen) return false;
 
   obj_size = ntohl(h->body_len)-4;
+  opaque = ntohl(h->opaque);
   // If something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       conn->stats.get_misses++;

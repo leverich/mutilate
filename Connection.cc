@@ -3,6 +3,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <pthread.h>
+
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/dns.h>
@@ -27,9 +29,107 @@
 
 
 using namespace moodycamel;
+std::hash<string> hashstr;
 
 extern ifstream kvfile;
 extern pthread_mutex_t flock;
+extern pthread_mutex_t *item_locks;
+extern int item_lock_hashpower;
+
+#define hashsize(n) ((unsigned long int)1<<(n))
+#define hashmask(n) (hashsize(n)-1)
+
+pthread_mutex_t cid_lock = PTHREAD_MUTEX_INITIALIZER;
+uint32_t connids = 0;
+
+pthread_mutex_t opaque_lock = PTHREAD_MUTEX_INITIALIZER;
+uint32_t g_opaque = 0;
+
+void item_lock(size_t hv, uint32_t cid) {
+    //char out[128];
+    //sprintf(out,"conn: %u, locking %lu\n",cid,hv);
+    //write(2,out,strlen(out));
+    pthread_mutex_lock(&item_locks[hv & hashmask(item_lock_hashpower)]);
+}
+
+void item_unlock(size_t hv, uint32_t cid) {
+    //char out[128];
+    //sprintf(out,"conn: %u, unlocking %lu\n",cid,hv);
+    //write(2,out,strlen(out));
+    pthread_mutex_unlock(&item_locks[hv & hashmask(item_lock_hashpower)]);
+}
+
+void *item_trylock(uint32_t hv, uint32_t cid) {
+    pthread_mutex_t *lock = &item_locks[hv & hashmask(item_lock_hashpower)];
+    if (pthread_mutex_trylock(lock) == 0) {
+        //char out[128];
+        //sprintf(out,"conn: %u, locking %u\n",cid,hv);
+        //write(2,out,strlen(out));
+        return lock;
+    }
+    return NULL;
+}
+
+void item_trylock_unlock(void *lock, uint32_t cid) {
+    //char out[128];
+    //sprintf(out,"conn: %u, unlocking\n",cid);
+    //write(2,out,strlen(out));
+    pthread_mutex_unlock((pthread_mutex_t *) lock);
+}
+
+void Connection::output_op(Operation *op, int type, bool found) {
+    char output[1024];
+    char k[256];
+    char a[256];
+    char s[256];
+    memset(k,0,256);
+    memset(a,0,256);
+    memset(s,0,256);
+    strcpy(k,op->key.c_str());
+    switch (type) {
+        case 0: //get
+            sprintf(a,"issue_get");
+            break;
+        case 1: //set
+            sprintf(a,"issue_set");
+            break;
+        case 2: //resp
+            sprintf(a,"resp");
+            break;
+    }
+    switch(read_state) {
+        case INIT_READ:
+            sprintf(s,"init");
+            break;
+        case CONN_SETUP:
+            sprintf(s,"setup");
+            break;
+        case LOADING:
+            sprintf(s,"load");
+            break;
+        case IDLE:
+            sprintf(s,"idle");
+            break;
+        case WAITING_FOR_GET:
+            sprintf(s,"waiting for get");
+            break;
+        case WAITING_FOR_SET:
+            sprintf(s,"waiting for set");
+            break;
+        case WAITING_FOR_DELETE:
+            sprintf(s,"waiting for del");
+            break;
+        case MAX_READ_STATE:
+            sprintf(s,"max");
+            break;
+    }
+    if (type == 2) {
+        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, found: %d, type: %d\n",cid,a,k,op->opaque,found,op->type);
+    } else {
+        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, type: %d\n",cid,a,k,op->opaque,op->type);
+    }
+    write(2,output,strlen(output));
+}
 
 /**
  * Create a new connection to a server endpoint.
@@ -63,8 +163,9 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   last_tx = last_rx = 0.0;
 
   last_miss = 0;
-
-
+  pthread_mutex_lock(&cid_lock);
+  cid = connids++;
+  pthread_mutex_unlock(&cid_lock);
   timer = evtimer_new(base, timer_cb, this);
 }
 
@@ -82,10 +183,10 @@ int Connection::do_connect() {
     sin.sun_family = AF_LOCAL;
     strcpy(sin.sun_path, hostname.c_str());
 
-    static int  addrlen;
+    int addrlen;
     addrlen = sizeof(sin);
-
-    if (bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen) == 0) {
+    int err = bufferevent_socket_connect(bev,  (struct sockaddr*)&sin, addrlen);
+    if (err == 0) {
         connected = 1;
         if (options.binary) {
           prot = new ProtocolBinary(options, this, bev);
@@ -95,7 +196,11 @@ int Connection::do_connect() {
           prot = new ProtocolAscii(options, this, bev);
         }
     } else {
+	connected = 0;
+        err = errno;
+	fprintf(stderr,"error %s\n",strerror(err));
         bufferevent_free(bev);
+        //event_base_free(_evbase_ptr);
     }
   } else {
     bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
@@ -377,101 +482,96 @@ int Connection::issue_getsetorset(double now) {
         string rKeySize;
         string rvaluelen;
 
-    
         bool res = trace_queue->try_dequeue(line);
         if (res) {
             if (line.compare("EOF") == 0) {
                 eof = 1;
                 return 1;
             }
-            /*
-            pthread_mutex_lock(&flock);
-            if (kvfile.good()) {
-                getline(kvfile,line);
-                pthread_mutex_unlock(&flock);
-            }
-            else {
-                pthread_mutex_unlock(&flock);
-                return 1;
-            }
-            */
-            stringstream ss(line);
-            int Op = 0;
-            int vl = 0; 
-
-            if (options.twitter_trace == 1) {
-                getline( ss, rT, ',' );
-                getline( ss, rKey, ',' );
-                getline( ss, rKeySize, ',' );
-                getline( ss, rvaluelen, ',' );
-                getline( ss, rApp, ',' );
-                getline( ss, rOp, ',' );
-                vl = atoi(rvaluelen.c_str());
-                if (vl < 1) vl = 1;
-                if (vl > 524000) vl = 524000;
-                if (rOp.compare("get") == 0) {
-                    Op = 1;
-                } else if (rOp.compare("set") == 0) {
-                    Op = 2;
-                } else {
-                    Op = 0;
+            int issued = 0;
+            while (!issued) {
+                /*
+                pthread_mutex_lock(&flock);
+                if (kvfile.good()) {
+                    getline(kvfile,line);
+                    pthread_mutex_unlock(&flock);
                 }
-                
-                //char buf[1024];
-                //sprintf(buf,"%s,%d\n",rKey.c_str(),vl);
-                //write(1,buf,strlen(buf));
-                
-            } else if (options.twitter_trace == 2) {
-                getline( ss, rT, ',' );
-                getline( ss, rKey, ',' );
-                getline( ss, rvaluelen, ',' );
-                getline( ss, rOp, ',' );
-                int op_n = atoi(rOp.c_str());
-
-                if (op_n == 1) 
-                    Op = 1;
-                else if (op_n == 0) {
-                    Op = 2;
+                else {
+                    pthread_mutex_unlock(&flock);
+                    return 1;
                 }
-                vl = atoi(rvaluelen.c_str()) - 76;
-                vl = vl - strlen(rKey.c_str());
+                */
+                stringstream ss(line);
+                int Op = 0;
+                int vl = 0; 
+
+                if (options.twitter_trace == 1) {
+                    getline( ss, rT, ',' );
+                    getline( ss, rKey, ',' );
+                    getline( ss, rKeySize, ',' );
+                    getline( ss, rvaluelen, ',' );
+                    getline( ss, rApp, ',' );
+                    getline( ss, rOp, ',' );
+                    vl = atoi(rvaluelen.c_str());
+                    if (vl < 1) vl = 1;
+                    if (vl > 524000) vl = 524000;
+                    if (rOp.compare("get") == 0) {
+                        Op = 1;
+                    } else if (rOp.compare("set") == 0) {
+                        Op = 2;
+                    } else {
+                        Op = 0;
+                    }
+                    
+                    //char buf[1024];
+                    //sprintf(buf,"%s,%d\n",rKey.c_str(),vl);
+                    //write(1,buf,strlen(buf));
+                    
+                } else if (options.twitter_trace == 2) {
+                    getline( ss, rT, ',' );
+                    getline( ss, rApp, ',' );
+                    getline( ss, rOp, ',' );
+                    getline( ss, rKey, ',' );
+                    getline( ss, rvaluelen, ',' );
+                    Op = atoi(rOp.c_str());
+                    vl = atoi(rvaluelen.c_str());
+                }
+                else {
+                    getline( ss, rT, ',' );
+                    getline( ss, rApp, ',' );
+                    getline( ss, rOp, ',' );
+                    getline( ss, rKey, ',' );
+                    getline( ss, rvaluelen, ',' );
+                    vl = atoi(rvaluelen.c_str());
+                    if (rOp.compare("read") == 0) 
+                        Op = 1;
+                    if (rOp.compare("write") == 0) 
+                        Op = 2;
+                }
+
+
+                char key[256];
+                memset(key,0,256);
+                strncpy(key, rKey.c_str(),255);
+                
+                switch(Op)
+                {
+                  case 0:
+                      fprintf(stderr,"invalid line: %s, vl: %d @T: %d\n",
+                              key,vl,atoi(rT.c_str()));
+                      break;
+                  case 1:
+                      issued = issue_get_with_len(key, vl, now);
+                      break;
+                  case 2:
+                      int index = lrand48() % (1024 * 1024);
+                      issued = issue_set(key, &random_char[index], vl, now,true);
+                      break;
+                
+                }
             }
-            else {
-                getline( ss, rT, ',' );
-                getline( ss, rApp, ',' );
-                getline( ss, rOp, ',' );
-                getline( ss, rKey, ',' );
-                getline( ss, rvaluelen, ',' );
-                vl = atoi(rvaluelen.c_str());
-                if (rOp.compare("read") == 0) 
-                    Op = 1;
-                if (rOp.compare("write") == 0) 
-                    Op = 2;
-            }
-
-
-            char key[256];
-            memset(key,0,256);
-            strncpy(key, rKey.c_str(),255);
-
-            switch(Op)
-            {
-              case 0:
-                  fprintf(stderr,"invalid line: %s, vl: %d @T: %d\n",
-                          key,vl,atoi(rT.c_str()));
-                  break;
-              case 1:
-                  issue_get_with_len(key, vl, now);
-                  break;
-              case 2:
-                  int index = lrand48() % (1024 * 1024);
-                  issue_set(key, &random_char[index], vl, now,true);
-                  break;
-            
-            }
-
         }
-  }
+   }
   
   return ret;
 }
@@ -479,7 +579,7 @@ int Connection::issue_getsetorset(double now) {
 /**
  * Issue a get request to the server.
  */
-void Connection::issue_get_with_len(const char* key, int valuelen, double now) {
+int Connection::issue_get_with_len(const char* key, int valuelen, double now) {
   Operation op;
   int l;
 
@@ -501,17 +601,29 @@ void Connection::issue_get_with_len(const char* key, int valuelen, double now) {
 
   //record before rx 
   //r_vsize = stats.rx_bytes % 100000;
-  
+  pthread_mutex_lock(&opaque_lock);
+  op.opaque = g_opaque++;
+  pthread_mutex_unlock(&opaque_lock);
+
   op.key = string(key);
   op.valuelen = valuelen;
   op.type = Operation::GET;
-  op_queue.push(op);
+  op.hv = hashstr(op.key);
+  //item_lock(op.hv,cid);
+  //pthread_mutex_t *lock = (pthread_mutex_t*)item_trylock(op.hv,cid);
+  //if (lock != NULL) {
+    op_queue[op.opaque] = op;
+    //output_op(&op,0,0);
 
-  if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  l = prot->get_request(key);
-  if (read_state != LOADING) stats.tx_bytes += l;
-  
-  stats.log_access(op);
+    //if (read_state == IDLE) read_state = WAITING_FOR_GET;
+    l = prot->get_request(key,op.opaque);
+    if (read_state != LOADING) stats.tx_bytes += l;
+    
+    stats.log_access(op);
+    return 1;
+  //} else {
+  // return 0;
+  //}
 }
 
 /**
@@ -540,12 +652,18 @@ void Connection::issue_get(const char* key, double now) {
   //record before rx 
   //r_vsize = stats.rx_bytes % 100000;
   
+  pthread_mutex_lock(&opaque_lock);
+  op.opaque = g_opaque++;
+  pthread_mutex_unlock(&opaque_lock);
+  
   op.key = string(key);
   op.type = Operation::GET;
-  op_queue.push(op);
+  op.hv = hashstr(op.key);
+  //item_lock(op.hv,cid);
+  op_queue[op.opaque] = op;
 
   if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  l = prot->get_request(key);
+  l = prot->get_request(key,op.opaque);
   if (read_state != LOADING) stats.tx_bytes += l;
   
   stats.log_access(op);
@@ -575,7 +693,8 @@ void Connection::issue_delete90(double now) {
 #endif
 
   op.type = Operation::DELETE;
-  op_queue.push(op);
+  op.opaque = 0;
+  op_queue[op.opaque] = op;
 
   if (read_state == IDLE) read_state = WAITING_FOR_DELETE;
   l = prot->delete90_request();
@@ -583,9 +702,17 @@ void Connection::issue_delete90(double now) {
 }
 
 /**
- * Issue a set request to the server.
+ * Issue a set request as a result of a miss to the server.
+ * The difference here is that we will yield to any outstanding SETs to this
+ * key, i.e. while waiting for GET response a SET to the key was issued.
+ *
+ *
+ * or v2?
+ *  - works with the lock held, since we want to beat any incoming writes
+ *  - maintains program order, total set ordering
+ *  - currenlty using this design
  */
-void Connection::issue_set(const char* key, const char* value, int length,
+void Connection::issue_set_miss(const char* key, const char* value, int length,
                            double now, bool is_access) {
   Operation op;
   int l;
@@ -605,12 +732,19 @@ void Connection::issue_set(const char* key, const char* value, int length,
   //r_key = atoi(kptr);
   //r_ksize = strlen(kptr);
   
+  pthread_mutex_lock(&opaque_lock);
+  op.opaque = g_opaque++;
+  pthread_mutex_unlock(&opaque_lock);
+  op.key = string(key);
+  op.valuelen = length;
   op.type = Operation::SET;
-  op_queue.push(op);
+  op.hv = hashstr(op.key);
+  op_queue[op.opaque] = op;
 
+  //output_op(&op,1,0);
 
-  if (read_state == IDLE) read_state = WAITING_FOR_SET;
-  l = prot->set_request(key, value, length);
+  //if (read_state == IDLE) read_state = WAITING_FOR_SET;
+  l = prot->set_request(key, value, length, op.opaque);
   if (read_state != LOADING) stats.tx_bytes += l;
 
   if (is_access)
@@ -618,26 +752,82 @@ void Connection::issue_set(const char* key, const char* value, int length,
 }
 
 /**
+ * Issue a set request to the server.
+ */
+int Connection::issue_set(const char* key, const char* value, int length,
+                           double now, bool is_access) {
+  Operation op;
+  int l;
+
+#if HAVE_CLOCK_GETTIME
+  op.start_time = get_time_accurate();
+#else
+  if (now == 0.0) op.start_time = get_time();
+  else op.start_time = now;
+#endif
+
+  //record value size
+  //r_vsize = length;
+  //r_appid = key[0] - '0';
+  //const char* kptr = key;
+  //kptr += 2;
+  //r_key = atoi(kptr);
+  //r_ksize = strlen(kptr);
+  
+  pthread_mutex_lock(&opaque_lock);
+  op.opaque = g_opaque++;
+  pthread_mutex_unlock(&opaque_lock);
+  op.key = string(key);
+  op.valuelen = length;
+  op.type = Operation::SET;
+  op.hv = hashstr(op.key);
+  //pthread_mutex_t *lock = (pthread_mutex_t*)item_trylock(op.hv,cid);
+  //if (lock != NULL) {
+  //item_lock(op.hv,cid);
+    op_queue[op.opaque] = op;
+
+    //output_op(&op,1,0);
+
+    //if (read_state == IDLE) read_state = WAITING_FOR_SET;
+    l = prot->set_request(key, value, length, op.opaque);
+    if (read_state != LOADING) stats.tx_bytes += l;
+
+    if (is_access)
+        stats.log_access(op);
+    return 1;
+  //} else {
+  //  return 0;
+  //}
+}
+
+/**
  * Return the oldest live operation in progress.
  */
-void Connection::pop_op() {
+void Connection::pop_op(Operation *op) {
+
   assert(op_queue.size() > 0);
 
-  op_queue.pop();
+  //op_queue.pop();
+  size_t hv = op->hv;
+  //pthread_mutex_t *l = op->lock;
+  op_queue.erase(op->opaque);
+  
+  //item_trylock_unlock(l,cid);
+  //item_unlock(hv,cid);
 
   if (read_state == LOADING) return;
   read_state = IDLE;
 
   // Advance the read state machine.
-  if (op_queue.size() > 0) {
-    Operation& op = op_queue.front();
-    switch (op.type) {
-    case Operation::GET: read_state = WAITING_FOR_GET; break;
-    case Operation::SET: read_state = WAITING_FOR_SET; break;
-    case Operation::DELETE: read_state = WAITING_FOR_DELETE; break;
-    default: DIE("Not implemented.");
-    }
-  }
+  //if (op_queue.size() > 0) {
+  //  Operation& op = op_queue.front();
+  //  switch (op.type) {
+  //  case Operation::GET: read_state = WAITING_FOR_GET; break;
+  //  case Operation::SET: read_state = WAITING_FOR_SET; break;
+  //  case Operation::DELETE: read_state = WAITING_FOR_DELETE; break;
+  //  default: DIE("Not implemented.");
+  //  }
+  //}
 }
 
 /**
@@ -676,7 +866,7 @@ void Connection::finish_op(Operation *op, int was_hit) {
   }
 
   last_rx = now;
-  pop_op();
+  pop_op(op);
 
   //lets check if we should output stats for the window
   //Do the binning for percentile outputs
@@ -695,6 +885,61 @@ void Connection::finish_op(Operation *op, int was_hit) {
   }
 
   drive_write_machine();
+}
+
+void Connection::finish_op_miss(Operation *op, int was_hit) {
+  double now;
+#if USE_CACHED_TIME
+  struct timeval now_tv;
+  event_base_gettimeofday_cached(base, &now_tv);
+  now = tv_to_double(&now_tv);
+#else
+  now = get_time();
+#endif
+#if HAVE_CLOCK_GETTIME
+  op->end_time = get_time_accurate();
+#else
+  op->end_time = now;
+#endif
+
+  if (options.successful_queries && was_hit) { 
+    switch (op->type) {
+    case Operation::GET: stats.log_get(*op); break;
+    case Operation::SET: stats.log_set(*op); break;
+    case Operation::DELETE: break;
+    default: DIE("Not implemented.");
+    }
+  } else {
+    switch (op->type) {
+    case Operation::GET: stats.log_get(*op); break;
+    case Operation::SET: stats.log_set(*op); break;
+    case Operation::DELETE: break;
+    default: DIE("Not implemented.");
+    }
+  }
+
+  last_rx = now;
+  //we are atomically issuing a set 
+  op_queue.erase(op->opaque);
+  read_state = IDLE;
+  
+
+  //lets check if we should output stats for the window
+  //Do the binning for percentile outputs
+  //crude at start
+  if ((options.misswindow != 0) && ( ((stats.window_accesses) % options.misswindow) == 0))
+  {
+      if (stats.window_gets != 0)
+      {
+        //printf("%lu,%.4f\n",(stats.accesses),
+        //        ((double)stats.window_get_misses/(double)stats.window_accesses));
+        stats.window_gets = 0;
+        stats.window_get_misses = 0;
+        stats.window_sets = 0;
+        stats.window_accesses = 0;
+      }
+  }
+
 }
 
 
@@ -927,7 +1172,7 @@ void Connection::read_callback() {
   struct evbuffer *input = bufferevent_get_input(bev);
 
   Operation *op = NULL;
-  bool done, found, full_read;
+  bool done, found;
 
   //initially assume found (for sets that may come through here)
   //is this correct? do we want to assume true in case that 
@@ -938,116 +1183,172 @@ void Connection::read_callback() {
   if (op_queue.size() == 0) V("Spurious read callback.");
 
   while (1) {
-    if (op_queue.size() > 0) op = &op_queue.front();
-
-    switch (read_state) {
-    case INIT_READ: DIE("event from uninitialized connection");
-    case IDLE: return;  // We munched all the data we expected?
-
-    case WAITING_FOR_GET:
-      assert(op_queue.size() > 0);
-
-      int obj_size;
-      full_read = prot->handle_response(input, done, found, obj_size);
-
-      if (!full_read) {
-        return;
-      } else if (done) {
-        
-        if ((!found && options.getset) || 
-            (!found && options.getsetorset)) {
-            char key[256];
-            string keystr = op->key;
-            strcpy(key, keystr.c_str());
-            int valuelen = op->valuelen;
-        
-            finish_op(op,0); // sets read_state = IDLE
-            //if not found and in getset mode, issue set
-            if (options.read_file) {
-                int index = lrand48() % (1024 * 1024);
-                issue_set(key, &random_char[index], valuelen);
-            }
-            else {
-                int index = lrand48() % (1024 * 1024);
-                issue_set(key, &random_char[index], valuelen);
-            }
-        } else {
-            if (!found) {
-                finish_op(op,1);
-            } else {
-                finish_op(op,0);
-            }
-        }
-
-
-        //char log[256];
-        //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
-        //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
-        //write(2,log,strlen(log));
-        
-
-      }
-      break;
-
-    case WAITING_FOR_SET:
-      
-      assert(op_queue.size() > 0);
-      full_read = prot->handle_response(input, done, found, obj_size);
-      if (!full_read) {
-
-        //char key[256];
-        //char log[1024];
-        //string keystr = op->key;
-        //strcpy(key, keystr.c_str());
-        //int valuelen = op->valuelen;
-        //sprintf(log,"ERROR SETTING: %s,%d\n",key,valuelen);
-        //write(2,log,strlen(log));
-        return; 
-      }
-      
-
-      
-      finish_op(op,1);
-      break;
     
-    case WAITING_FOR_DELETE:
-      if (!prot->handle_response(input,done,found, obj_size)) return;
-      finish_op(op,1);
-      break;
-
-    case LOADING:
-      assert(op_queue.size() > 0);
-      if (!prot->handle_response(input, done, found, obj_size)) return;
-      loader_completed++;
-      pop_op();
-
-      if (loader_completed == options.records) {
-        D("Finished loading.");
-        read_state = IDLE;
-      } else {
-        while (loader_issued < loader_completed + LOADER_CHUNK) {
-          if (loader_issued >= options.records) break;
-
-          char key[256];
-          string keystr = keygen->generate(loader_issued);
-          strcpy(key, keystr.c_str());
-          int index = lrand48() % (1024 * 1024);
-          issue_set(key, &random_char[index], valuesize->generate());
-
-          loader_issued++;
-        }
-      }
-
-      break;
-
-    case CONN_SETUP:
+    if (read_state == CONN_SETUP) {
       assert(options.binary);
       if (!prot->setup_connection_r(input)) return;
       read_state = IDLE;
       break;
-
-    default: DIE("not implemented");
     }
+      
+    int obj_size;
+    uint32_t opaque;
+    bool full_read = prot->handle_response(input, done, found, obj_size, opaque);
+    if (full_read) {
+        op = &op_queue[opaque];
+        //char out[128];
+        //sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
+        //write(2,out,strlen(out));
+        //output_op(op,2,found);
+    } else {
+        return;
+    }
+    
+
+    switch (op->type) {
+        case Operation::GET:
+            if (done) {
+                if ((!found && options.getset) || 
+                    (!found && options.getsetorset)) {
+                    char key[256];
+                    string keystr = op->key;
+                    strcpy(key, keystr.c_str());
+                    int valuelen = op->valuelen;
+                
+                    finish_op_miss(op,0); // sets read_state = IDLE
+                    //if not found and in getset mode, issue set
+                    if (options.read_file) {
+                        int index = lrand48() % (1024 * 1024);
+                        issue_set_miss(key, &random_char[index], valuelen);
+                    }
+                    else {
+                        int index = lrand48() % (1024 * 1024);
+                        issue_set_miss(key, &random_char[index], valuelen);
+                    }
+                    
+                } else {
+                    if (found) {
+                        finish_op(op,1);
+                    } else {
+                        finish_op(op,0);
+                    }
+                }
+            } else {
+                char out[128];
+                sprintf(out,"conn: %u, not done reading, should do something",cid);
+                write(2,out,strlen(out));
+            }
+            break;
+        case Operation::SET:
+            finish_op(op,1);
+            break;
+        default: DIE("not implemented");
+    }
+
+
+    //switch (read_state) {
+    //case INIT_READ: DIE("event from uninitialized connection");
+    //case IDLE: return;  // We munched all the data we expected?
+
+    //case WAITING_FOR_GET:
+    //  assert(op_queue.size() > 0);
+    //  if (!full_read) {
+    //    return;
+    //  } else if (done) {
+
+    //    
+    //    if ((!found && options.getset) || 
+    //        (!found && options.getsetorset)) {
+    //        char key[256];
+    //        string keystr = op->key;
+    //        strcpy(key, keystr.c_str());
+    //        int valuelen = op->valuelen;
+    //    
+    //        finish_op(op,0); // sets read_state = IDLE
+    //        //if not found and in getset mode, issue set
+    //        if (options.read_file) {
+    //            int index = lrand48() % (1024 * 1024);
+    //            issue_set(key, &random_char[index], valuelen);
+    //        }
+    //        else {
+    //            int index = lrand48() % (1024 * 1024);
+    //            issue_set(key, &random_char[index], valuelen);
+    //        }
+    //    } else {
+    //        if (!found) {
+    //            finish_op(op,1);
+    //        } else {
+    //            finish_op(op,0);
+    //        }
+    //    }
+
+
+    //    //char log[256];
+    //    //sprintf(log,"%f,%d,%d,%d,%d,%d,%d\n",
+    //    //        r_time,r_appid,r_type,r_ksize,r_vsize,r_key,r_hit);
+    //    //write(2,log,strlen(log));
+    //    
+
+    //  }
+    //  break;
+
+    //case WAITING_FOR_SET:
+    //  
+    //  assert(op_queue.size() > 0);
+    //  //full_read = prot->handle_response(input, done, found, obj_size, opaque);
+    //  if (!full_read) {
+
+    //    //char key[256];
+    //    //char log[1024];
+    //    //string keystr = op->key;
+    //    //strcpy(key, keystr.c_str());
+    //    //int valuelen = op->valuelen;
+    //    //sprintf(log,"ERROR SETTING: %s,%d\n",key,valuelen);
+    //    //write(2,log,strlen(log));
+    //    return; 
+    //  }
+    //  
+    //  finish_op(op,1);
+    //  break;
+    //
+    //case WAITING_FOR_DELETE:
+    //  if (!full_read) return;
+    //  finish_op(op,1);
+    //  break;
+
+    //case LOADING:
+    //  assert(op_queue.size() > 0);
+    //  if (!full_read) return;
+    //  loader_completed++;
+    //  pop_op(op);
+
+    //  if (loader_completed == options.records) {
+    //    D("Finished loading.");
+    //    read_state = IDLE;
+    //  } else {
+    //    while (loader_issued < loader_completed + LOADER_CHUNK) {
+    //      if (loader_issued >= options.records) break;
+
+    //      char key[256];
+    //      string keystr = keygen->generate(loader_issued);
+    //      strcpy(key, keystr.c_str());
+    //      int index = lrand48() % (1024 * 1024);
+    //      issue_set(key, &random_char[index], valuesize->generate());
+
+    //      loader_issued++;
+    //    }
+    //  }
+
+    //  break;
+
+    //case CONN_SETUP:
+    //  assert(options.binary);
+    //  if (!prot->setup_connection_r(input)) return;
+    //  read_state = IDLE;
+    //  break;
+
+    //default: DIE("not implemented");
+    //}
   }
 }
 

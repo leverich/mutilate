@@ -45,12 +45,15 @@
 #include "blockingconcurrentqueue.h"
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
+#define hashsize(n) ((unsigned long int)1<<(n))
 
 using namespace std;
 using namespace moodycamel;
 
 ifstream kvfile;
 pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t *item_locks;
+int item_lock_hashpower = 13;
 
 gengetopt_args_info args;
 char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
@@ -682,7 +685,6 @@ void go(const vector<string>& servers, options_t& options,
 
   ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
-  memset(rdata,0,sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
   pthread_t rtid;
   if (options.read_file) {
@@ -694,6 +696,14 @@ void go(const vector<string>& servers, options_t& options,
       usleep(10);
       
   }
+
+  /* initialize item locks */
+  uint32_t item_lock_count = hashsize(item_lock_hashpower);
+  item_locks = (pthread_mutex_t*)calloc(item_lock_count, sizeof(pthread_mutex_t));
+  for (size_t i = 0; i < item_lock_count; i++) {
+      pthread_mutex_init(&item_locks[i], NULL);
+  }
+
 
   if (options.threads > 1) {
     struct thread_data td[options.threads];
@@ -1017,7 +1027,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   vector<Connection*> connections;
   vector<Connection*> server_lead;
 
-
   for (auto s: servers) {
     // Split args.server_arg[s] into host:port using strtok().
     char *s_copy = new char[s.length() + 1];
@@ -1043,21 +1052,23 @@ void do_mutilate(const vector<string>& servers, options_t& options,
                                         trace_queue,
                                         args.agentmode_given ? false :
                                         true);
-      int tries = 20;
+      int tries = 120;
       int connected = 0;
       int s = 2;
       for (int i = 0; i < tries; i++) {
-       
+        pthread_mutex_lock(&flock);
         int ret = conn->do_connect();
+        pthread_mutex_unlock(&flock);
         if (ret) {
             connected = 1;
+            fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c);
             break;
         }
-        s *= 2;
         int d = s + rand() % 100;
+        //s = s + d;
         
-        fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
-        usleep(d);
+        //fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
+        sleep(d);
       } 
       if (connected) {
         connections.push_back(conn);

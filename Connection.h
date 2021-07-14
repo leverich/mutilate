@@ -6,6 +6,7 @@
 #include <string>
 #include <fstream>
 #include <map>
+#include <unordered_map>
 
 #include <event2/bufferevent.h>
 #include <event2/dns.h>
@@ -105,6 +106,7 @@ private:
   char last_key[256];
   int last_miss;
 
+  uint32_t cid;
   int eof;
 
   //trace format variables
@@ -121,14 +123,16 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
-  std::queue<Operation> op_queue;
+  std::unordered_map<uint32_t,Operation> op_queue;
 
   ConcurrentQueue<string> *trace_queue;
 
   // state machine functions / event processing
-  void pop_op();
+  void pop_op(Operation *op);
+  void output_op(Operation *op, int type, bool was_found);
   //void finish_op(Operation *op);
   void finish_op(Operation *op,int was_hit);
+  void finish_op_miss(Operation *op,int was_hit);
   void issue_something(double now = 0.0);
   int issue_something_trace(double now = 0.0);
   void issue_getset(double now = 0.0);
@@ -138,8 +142,10 @@ private:
   // request functions
   void issue_sasl();
   void issue_get(const char* key, double now = 0.0);
-  void issue_get_with_len(const char* key, int valuelen, double now = 0.0);
-  void issue_set(const char* key, const char* value, int length,
+  int issue_get_with_len(const char* key, int valuelen, double now = 0.0);
+  int issue_set(const char* key, const char* value, int length,
+                 double now = 0.0, bool is_access = false);
+  void issue_set_miss(const char* key, const char* value, int length,
                  double now = 0.0, bool is_access = false);
   void issue_delete90(double now = 0.0);
 
