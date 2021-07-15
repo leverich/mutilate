@@ -482,14 +482,14 @@ int Connection::issue_getsetorset(double now) {
         string rKeySize;
         string rvaluelen;
 
-        bool res = trace_queue->try_dequeue(line);
-        if (res) {
-            if (line.compare("EOF") == 0) {
-                eof = 1;
-                return 1;
-            }
-            int issued = 0;
-            while (!issued) {
+        int issued = 0;
+        while (issued < options.depth) {
+            bool res = trace_queue->try_dequeue(line);
+            if (res) {
+                if (line.compare("EOF") == 0) {
+                    eof = 1;
+                    return 1;
+                }
                 /*
                 pthread_mutex_lock(&flock);
                 if (kvfile.good()) {
@@ -866,7 +866,8 @@ void Connection::finish_op(Operation *op, int was_hit) {
   }
 
   last_rx = now;
-  pop_op(op);
+  op_queue.erase(op->opaque);
+  read_state = IDLE;
 
   //lets check if we should output stats for the window
   //Do the binning for percentile outputs
@@ -939,6 +940,8 @@ void Connection::finish_op_miss(Operation *op, int was_hit) {
         stats.window_accesses = 0;
       }
   }
+  
+  drive_write_machine();
 
 }
 
@@ -1102,45 +1105,45 @@ void Connection::drive_write_machine(double now) {
       if (op_queue.size() >= (size_t) options.depth) {
         write_state = WAITING_FOR_OPQ;
         return;
-      } else if (now < next_time) {
-        write_state = WAITING_FOR_TIME;
-        break; // We want to run through the state machine one more time
-               // to make sure the timer is armed.
-      } else if (options.moderate && now < last_rx + 0.00025) {
-        write_state = WAITING_FOR_TIME;
-        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-          delay = last_rx + 0.00025 - now;
-          double_to_tv(delay, &tv);
-          evtimer_add(timer, &tv);
-        }
-        return;
       }
+      //uncommenting for lowest delay possible
+      //if (op_queue.size() >= (size_t) options.depth) {
+      //  write_state = WAITING_FOR_OPQ;
+      //  return;
+      //} else if (now < next_time) {
+      //  write_state = WAITING_FOR_TIME;
+      //  break; // We want to run through the state machine one more time
+      //         // to make sure the timer is armed.
+      //} else if (options.moderate && now < last_rx + 0.00025) {
+      //  write_state = WAITING_FOR_TIME;
+      //  if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+      //    delay = last_rx + 0.00025 - now;
+      //    double_to_tv(delay, &tv);
+      //    evtimer_add(timer, &tv);
+      //  }
+      //  return;
+      //}
 
-      if (options.getset)
-        issue_getset(now);
-      else if (options.getsetorset) {
+      if (options.getsetorset) {
         int ret = issue_getsetorset(now);
         if (ret) return; //if at EOF
-      } else if (options.read_file) {
-        issue_something_trace(now);
-      }
-      else {
+      } else {
         issue_something(now);
       }
       
       last_tx = now;
       stats.log_op(op_queue.size());
-      next_time += iagen->generate();
+      //next_time += iagen->generate();
 
-      if (options.skip && options.lambda > 0.0 &&
-          now - next_time > 0.005000 &&
-          op_queue.size() >= (size_t) options.depth) {
+      //if (options.skip && options.lambda > 0.0 &&
+      //    now - next_time > 0.005000 &&
+      //    op_queue.size() >= (size_t) options.depth) {
 
-        while (next_time < now - 0.004000) {
-          stats.skips++;
-          next_time += iagen->generate();
-        }
-      }
+      //  while (next_time < now - 0.004000) {
+      //    stats.skips++;
+      //    next_time += iagen->generate();
+      //  }
+      //}
       break;
 
     case WAITING_FOR_TIME:
@@ -1215,7 +1218,6 @@ void Connection::read_callback() {
                     strcpy(key, keystr.c_str());
                     int valuelen = op->valuelen;
                 
-                    finish_op_miss(op,0); // sets read_state = IDLE
                     //if not found and in getset mode, issue set
                     if (options.read_file) {
                         int index = lrand48() % (1024 * 1024);
@@ -1225,6 +1227,7 @@ void Connection::read_callback() {
                         int index = lrand48() % (1024 * 1024);
                         issue_set_miss(key, &random_char[index], valuelen);
                     }
+                    finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
                     if (found) {
