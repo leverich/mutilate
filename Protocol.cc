@@ -539,8 +539,10 @@ int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
                         htonl(keylen) };
   h.opaque = htonl(opaque);
 
-  bufferevent_write(bev, &h, 24); // size does not include extras
-  bufferevent_write(bev, key, keylen);
+  evbuffer_add(bev, &h, 24);
+  evbuffer_add(bev, key, keylen);
+  //bufferevent_write(bev, &h, 24); // size does not include extras
+  //bufferevent_write(bev, key, keylen);
   return 24 + keylen;
 }
 
@@ -557,9 +559,12 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len, uin
                         0x08, 0x00, {htons(0)},
                         htonl(keylen + 8 + len) };
   h.opaque = htonl(opaque);
-  bufferevent_write(bev, &h, 32); // With extras
-  bufferevent_write(bev, key, keylen);
-  bufferevent_write(bev, value, len);
+  //bufferevent_write(bev, &h, 32); // With extras
+  //bufferevent_write(bev, key, keylen);
+  //bufferevent_write(bev, value, len);
+  evbuffer_add(bev, &h, 32);
+  evbuffer_add(bev, key, keylen);
+  evbuffer_add(bev, value, len);
   return 24 + ntohl(h.body_len);
 }
 
