@@ -482,8 +482,8 @@ int Connection::issue_getsetorset(double now) {
         string rKeySize;
         string rvaluelen;
 
-        int issued = 0;
-        while (issued < options.depth) {
+        int nissued = 0;
+        while (nissued < options.depth) {
             bool res = trace_queue->try_dequeue(line);
             if (res) {
                 if (line.compare("EOF") == 0) {
@@ -553,7 +553,7 @@ int Connection::issue_getsetorset(double now) {
                 char key[256];
                 memset(key,0,256);
                 strncpy(key, rKey.c_str(),255);
-                
+                int issued = 0;
                 switch(Op)
                 {
                   case 0:
@@ -568,6 +568,13 @@ int Connection::issue_getsetorset(double now) {
                       issued = issue_set(key, &random_char[index], vl, now,true);
                       break;
                 
+                }
+                if (issued) {
+                    nissued++;
+                } else {
+                      fprintf(stderr,"failed to issue line: %s, vl: %d @T: %d\n",
+                              key,vl,atoi(rT.c_str()));
+                      break;
                 }
             }
         }
