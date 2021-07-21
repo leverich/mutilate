@@ -62,7 +62,12 @@ private:
 class ProtocolBinary : public Protocol {
 public:
   ProtocolBinary(options_t opts, Connection* conn, bufferevent* bev):
-    Protocol(opts, conn, bev) {};
+    Protocol(opts, conn, bev) {
+        //int wbuf_written;
+        //int wbuf_towrite;
+        //unsigned char *wbuf_pos;
+        //unsigned char wbuf[65536];
+    };
   ~ProtocolBinary() {};
 
   virtual bool setup_connection_w();
@@ -76,7 +81,8 @@ public:
 class ProtocolRESP : public Protocol {
 public:
   ProtocolRESP(options_t opts, Connection* conn, bufferevent* bev):
-    Protocol(opts, conn, bev) {};
+    Protocol(opts, conn, bev) {
+    };
   ~ProtocolRESP() {};
 
   virtual bool setup_connection_w() { return true; } 

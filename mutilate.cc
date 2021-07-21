@@ -13,6 +13,7 @@
 #include <queue>
 #include <string>
 #include <vector>
+#include <sstream>
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -71,11 +72,15 @@ struct thread_data {
   zmq::socket_t *socket;
 #endif
   int id;
-  ConcurrentQueue<string> *trace_queue;
+  //std::vector<ConcurrentQueue<string>*> trace_queue;
+  std::vector<queue<string>*> trace_queue;
+  std::vector<pthread_mutex_t*> mutexes;
 };
 
 struct reader_data {
-  ConcurrentQueue<string> *trace_queue;
+  //std::vector<ConcurrentQueue<string>*> trace_queue;
+  std::vector<queue<string>*> trace_queue;
+  std::vector<pthread_mutex_t*> mutexes;
   string trace_filename;
 };
 
@@ -96,8 +101,10 @@ void go(const vector<string> &servers, options_t &options,
 #endif
 );
 
+//void do_mutilate(const vector<string> &servers, options_t &options,
+//                 ConnectionStats &stats,std::vector<ConcurrentQueue<string>*> trace_queue,  bool master = true
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats,ConcurrentQueue<string> *trace_queue,  bool master = true
+                 ConnectionStats &stats,std::vector<queue<string>*> trace_queue, std::vector<pthread_mutex_t*> mutexes,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
@@ -683,9 +690,20 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
-  ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
+  //std::vector<ConcurrentQueue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
+  std::vector<queue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
+  std::vector<pthread_mutex_t*> mutexes; 
+  for (int i = 0; i <= options.apps; i++) {
+      //trace_queue.push_back(new ConcurrentQueue<string>(2000000));
+      trace_queue.push_back(new std::queue<string>());
+      pthread_mutex_t *lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+      *lock = PTHREAD_MUTEX_INITIALIZER;
+      mutexes.push_back(lock);
+  }
+  //ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
+  rdata->mutexes = mutexes;
   pthread_t rtid;
   if (options.read_file) {
       rdata->trace_filename = options.file_name; 
@@ -722,6 +740,7 @@ void go(const vector<string>& servers, options_t& options,
       td[t].options = &options;
       td[t].id = t;
       td[t].trace_queue = trace_queue;
+      td[t].mutexes = mutexes;
 #ifdef HAVE_LIBZMQ
       td[t].socket = socket;
 #endif
@@ -776,10 +795,10 @@ void go(const vector<string>& servers, options_t& options,
       stats.accumulate(*cs);
       delete cs;
     }
-    delete trace_queue;
+    //delete trace_queue;
 
   } else if (options.threads == 1) {
-    do_mutilate(servers, options, stats, trace_queue, true
+    do_mutilate(servers, options, stats, trace_queue, mutexes, true
 #ifdef HAVE_LIBZMQ
 , socket
 #endif
@@ -899,7 +918,9 @@ static char *get_stream(ZSTD_DCtx* dctx, FILE *fin, size_t const buffInSize, voi
 
 void* reader_thread(void *arg) {
   struct reader_data *rdata = (struct reader_data *) arg;
-  ConcurrentQueue<string> *trace_queue = (ConcurrentQueue<string>*) rdata->trace_queue;
+  //std::vector<ConcurrentQueue<string>*> trace_queue = (std::vector<ConcurrentQueue<string>*>) rdata->trace_queue;
+  std::vector<queue<string>*> trace_queue = (std::vector<queue<string>*>) rdata->trace_queue;
+  std::vector<pthread_mutex_t*> mutexes = (std::vector<pthread_mutex_t*>) rdata->mutexes;
  
   if (hasEnding(rdata->trace_filename,".zst")) {
         //init
@@ -925,12 +946,27 @@ void* reader_thread(void *arg) {
             while ((line = strsep(&trace,"\n"))) {
                 strncpy(line_p,line,2048);
                 string full_line(line);
-                bool res = trace_queue->try_enqueue(full_line);
-                while (!res) {
-                    usleep(10);
-                    res = trace_queue->try_enqueue(full_line);
-                    nwrites++;
+                //check the appid
+                int appid = 0;
+                if (trace_queue.size() > 1) {
+                    stringstream ss(full_line);
+
+                    string rT;
+                    string rApp;
+                    getline( ss, rT, ',');
+                    getline( ss, rApp, ',');
+                    appid = stoi(rApp);
+
                 }
+                pthread_mutex_lock(mutexes[appid]);
+                trace_queue[appid]->push(full_line);
+                pthread_mutex_unlock(mutexes[appid]);
+                //bool res = trace_queue[appid]->try_enqueue(full_line);
+                //while (!res) {
+                //    //usleep(10);
+                //    //res = trace_queue[appid]->try_enqueue(full_line);
+                //    nwrites++;
+                //}
                 n++;
                 if (n % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, waits: %lu\n",n,nwrites);
 
@@ -941,7 +977,10 @@ void* reader_thread(void *arg) {
         }
   	    string eof = "EOF";
   	    for (int i = 0; i < 1000; i++) {
-  	        trace_queue->enqueue(eof);
+                for (int j = 0; j < trace_queue.size(); j++) {
+  	            //trace_queue[j]->enqueue(eof);
+  	            trace_queue[j]->push(eof);
+                }
   	    }
         if (trace) {
             free(trace);
@@ -952,20 +991,20 @@ void* reader_thread(void *arg) {
         free(buffOut);
 
 	
-  } else {
+  } //else {
  
-  	ifstream trace_file;
-  	trace_file.open(rdata->trace_filename);
-  	while (trace_file.good()) {
-  	  string line;
-  	  getline(trace_file,line);
-  	  trace_queue->enqueue(line);
-  	}
-  	string eof = "EOF";
-  	for (int i = 0; i < 1000; i++) {
-  	  trace_queue->enqueue(eof);
-  	}
-  }
+  	//ifstream trace_file;
+  	//trace_file.open(rdata->trace_filename);
+  	//while (trace_file.good()) {
+  	//  string line;
+  	//  getline(trace_file,line);
+  	//  trace_queue->enqueue(line);
+  	//}
+  	//string eof = "EOF";
+  	//for (int i = 0; i < 1000; i++) {
+  	//  trace_queue->enqueue(eof);
+  	//}
+  //}
 
   return NULL;
 }
@@ -980,7 +1019,7 @@ void* thread_main(void *arg) {
   }
   ConnectionStats *cs = new ConnectionStats();
 
-  do_mutilate(*td->servers, *td->options, *cs,  td->trace_queue, td->master
+  do_mutilate(*td->servers, *td->options, *cs,  td->trace_queue, td->mutexes, td->master
 #ifdef HAVE_LIBZMQ
 , td->socket
 #endif
@@ -990,7 +1029,9 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, ConcurrentQueue<string> *trace_queue, bool master 
+                 ConnectionStats& stats, vector<queue<string>*> trace_queue, vector<pthread_mutex_t*> mutexes, bool master 
+//void do_mutilate(const vector<string>& servers, options_t& options,
+//                 ConnectionStats& stats, vector<ConcurrentQueue<string>*> trace_queue, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -1049,7 +1090,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     srand(time(NULL));
     for (int c = 0; c < conns; c++) {
       Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                        trace_queue,
+                                        //NULL,//trace_queue,
                                         args.agentmode_given ? false :
                                         true);
       int tries = 120;
@@ -1061,7 +1102,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         pthread_mutex_unlock(&flock);
         if (ret) {
             connected = 1;
-            fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c);
+            fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c+1);
             break;
         }
         int d = s + rand() % 100;
@@ -1071,6 +1112,8 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         sleep(d);
       } 
       if (connected) {
+        conn->set_queue(trace_queue[conn->get_cid()]);
+        conn->set_lock(mutexes[conn->get_cid()]);
         connections.push_back(conn);
       } else {
         fprintf(stderr,"conn: %d, not connected!!\n",c);
@@ -1286,6 +1329,7 @@ void args_to_options(options_t* options) {
   options->threads = args.threads_arg;
   options->server_given = args.server_given;
   options->roundrobin = args.roundrobin_given;
+  options->apps = args.apps_arg;
 
   int connections = options->connections;
   if (options->roundrobin) {

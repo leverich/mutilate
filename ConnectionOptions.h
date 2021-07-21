@@ -4,6 +4,7 @@
 #include "distributions.h"
 
 typedef struct {
+  int apps;
   int connections;
   bool blocking;
   double lambda;

@@ -531,6 +531,9 @@ bool ProtocolBinary::setup_connection_r(evbuffer* input) {
  * Send a binary get request.
  */
 int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
+
+  struct evbuffer *output = bufferevent_get_output(bev);
+  
   uint16_t keylen = strlen(key);
 
   // each line is 4-bytes
@@ -539,8 +542,8 @@ int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
                         htonl(keylen) };
   h.opaque = htonl(opaque);
 
-  evbuffer_add(bev, &h, 24);
-  evbuffer_add(bev, key, keylen);
+  evbuffer_add(output, &h, 24);
+  evbuffer_add(output, key, keylen);
   //bufferevent_write(bev, &h, 24); // size does not include extras
   //bufferevent_write(bev, key, keylen);
   return 24 + keylen;
@@ -552,6 +555,8 @@ int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
  * Send a binary set request.
  */
 int ProtocolBinary::set_request(const char* key, const char* value, int len, uint32_t opaque) {
+  struct evbuffer *output = bufferevent_get_output(bev);
+  
   uint16_t keylen = strlen(key);
 
   // each line is 4-bytes
@@ -562,9 +567,9 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len, uin
   //bufferevent_write(bev, &h, 32); // With extras
   //bufferevent_write(bev, key, keylen);
   //bufferevent_write(bev, value, len);
-  evbuffer_add(bev, &h, 32);
-  evbuffer_add(bev, key, keylen);
-  evbuffer_add(bev, value, len);
+  evbuffer_add(output, &h, 32);
+  evbuffer_add(output, key, keylen);
+  evbuffer_add(output, value, len);
   return 24 + ntohl(h.body_len);
 }
 

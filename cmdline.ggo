@@ -34,6 +34,7 @@ option "assoc" - "We create hash tables by taking the truncating the \
                    sizes we just use normal method of (key,value) store. No hash table." int default="4"
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
+option "apps" - "Number of apps, should eqaul total conns" int default="1"
 
 option "read_file"  - "Read keys from file." string default=""
 option "twitter_trace"  - "use twitter memcached trace format from file." int default="0"

@@ -23,6 +23,12 @@
 #include "blockingconcurrentqueue.h"
 #include "Protocol.h"
 
+#define OPAQUE_MAX 16384
+#define hashsize(n) ((unsigned long int)1<<(n))
+#define hashmask(n) (hashsize(n)-1)
+
+#define MAX_BUFFER_SIZE 8*1024*1024
+
 using namespace std;
 using namespace moodycamel;
 
@@ -37,8 +43,9 @@ class Connection {
 public:
   Connection(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname, string _port, options_t options,
-             ConcurrentQueue<string> *a_trace_queue,
+             //ConcurrentQueue<string> *a_trace_queue,
              bool sampling = true);
+
   ~Connection();
 
   int do_connect();
@@ -61,6 +68,11 @@ public:
   void read_callback();
   void write_callback();
   void timer_callback();
+  
+  uint32_t get_cid();
+  //void set_queue(ConcurrentQueue<string> *a_trace_queue);
+  void set_queue(queue<string> *a_trace_queue);
+  void set_lock(pthread_mutex_t* a_lock);
 
 private:
   string hostname;
@@ -97,15 +109,15 @@ private:
   read_state_enum read_state;
   write_state_enum write_state;
 
-  //need to keep value length for read key
-  map<string,string> key_len;
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
 
-  //was the last op a miss
-  char last_key[256];
-  int last_miss;
+  uint32_t opaque;
+  int issue_buf_size;
+  unsigned char *issue_buf_pos;
+  unsigned char *issue_buf;
 
+  uint32_t total;
   uint32_t cid;
   int eof;
 
@@ -124,15 +136,17 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
   std::unordered_map<uint32_t,Operation> op_queue;
-
-  ConcurrentQueue<string> *trace_queue;
+  //std::vector<Operation> op_queue;
+  uint32_t op_queue_size;
+  pthread_mutex_t* lock;
+  //ConcurrentQueue<string> *trace_queue;
+  queue<string> *trace_queue;
 
   // state machine functions / event processing
   void pop_op(Operation *op);
   void output_op(Operation *op, int type, bool was_found);
   //void finish_op(Operation *op);
   void finish_op(Operation *op,int was_hit);
-  void finish_op_miss(Operation *op,int was_hit);
   void issue_something(double now = 0.0);
   int issue_something_trace(double now = 0.0);
   void issue_getset(double now = 0.0);
@@ -145,8 +159,7 @@ private:
   int issue_get_with_len(const char* key, int valuelen, double now = 0.0);
   int issue_set(const char* key, const char* value, int length,
                  double now = 0.0, bool is_access = false);
-  void issue_set_miss(const char* key, const char* value, int length,
-                 double now = 0.0, bool is_access = false);
+  void issue_set_miss(const char* key, const char* value, int length);
   void issue_delete90(double now = 0.0);
 
   // protocol fucntions
