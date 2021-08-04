@@ -146,6 +146,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   opaque = 0;
   total = 0;
   op_queue_size = 0;
+  issue_buf_n = 0;
   //;
   //op_queue = (Operation**)malloc(sizeof(Operation*)*OPAQUE_MAX);
   eof = 0;
@@ -162,7 +163,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   read_state  = INIT_READ;
   write_state = INIT_WRITE;
-
+  last_quiet = false;
   //op_queue.reserve(OPAQUE_MAX); //new std::vector<Operation>(OPAQUE_MAX);
   
   last_tx = last_rx = 0.0;
@@ -556,9 +557,6 @@ int Connection::issue_getsetorset(double now) {
                         Op = 0;
                     }
                     
-                    //char buf[1024];
-                    //sprintf(buf,"%s,%d\n",rKey.c_str(),vl);
-                    //write(1,buf,strlen(buf));
                     
                 } else if (options.twitter_trace == 2) {
                     getline( ss, rT, ',' );
@@ -568,6 +566,9 @@ int Connection::issue_getsetorset(double now) {
                     getline( ss, rvaluelen, ',' );
                     Op = stoi(rOp);
                     vl = stoi(rvaluelen);
+                    //char outbuf[1024];
+                    //sprintf(outbuf,"%s\n",line.c_str());
+                    //write(1,outbuf,strlen(outbuf));
                 }
                 else {
                     getline( ss, rT, ',' );
@@ -594,11 +595,24 @@ int Connection::issue_getsetorset(double now) {
                               key,vl,stoi(rT));
                       break;
                   case 1:
-                      issued = issue_get_with_len(key, vl, now);
+                      if (nissued < options.depth-1) {
+                        issued = issue_get_with_len(key, vl, now, true);
+                        last_quiet = true;
+                      } else {
+                        issued = issue_get_with_len(key, vl, now, false);
+                        last_quiet = false;
+                      }
+                      //} else {
+                      //  issued = issue_get_with_len(key, vl, now, false);
+                      //}
                       break;
                   case 2:
+                      if (last_quiet) {
+                          issue_noop(now);
+                      }
                       int index = lrand48() % (1024 * 1024);
                       issued = issue_set(key, &random_char[index], vl, now, true);
+                      last_quiet = false;
                       break;
                 
                 }
@@ -612,11 +626,21 @@ int Connection::issue_getsetorset(double now) {
                 }
             }
         }
+        //fprintf(stderr,"getsetorset issuing %d reqs\n",issue_buf_n);
+        //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+        //fprintf(stderr,"-------------------------------------\n");
+        //memcpy(output,issue_buf,issue_buf_size);
+        //write(2,output,issue_buf_size);
+        //fprintf(stderr,"\n-------------------------------------\n");
+
+        //free(output);
         //buffer is ready to go!
         bufferevent_write(bev, issue_buf, issue_buf_size);
+        
         memset(issue_buf,0,issue_buf_size);
         issue_buf_pos = issue_buf;
         issue_buf_size = 0;
+        issue_buf_n = 0;
 
    }
   
@@ -626,7 +650,7 @@ int Connection::issue_getsetorset(double now) {
 /**
  * Issue a get request to the server.
  */
-int Connection::issue_get_with_len(const char* key, int valuelen, double now) {
+int Connection::issue_get_with_len(const char* key, int valuelen, double now, bool quiet) {
   //Operation *op = new Operation;
   Operation op; // = new Operation;
   int l;
@@ -674,6 +698,10 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now) {
     binary_header_t h = { 0x80, CMD_GET, htons(keylen),
                           0x00, 0x00, {htons(0)},
                           htonl(keylen) };
+
+    if (quiet) {
+        h.opcode = CMD_GETQ;
+    }
     h.opaque = htonl(op.opaque);
 
     memcpy(issue_buf_pos,&h,24);
@@ -682,6 +710,7 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now) {
     memcpy(issue_buf_pos,key,keylen);
     issue_buf_pos += keylen;
     issue_buf_size += keylen;
+    issue_buf_n++;
     
     if (read_state != LOADING) stats.tx_bytes += 24 + keylen;
     
@@ -722,7 +751,7 @@ void Connection::issue_get(const char* key, double now) {
   
   op.key = string(key);
   op.type = Operation::GET;
-  op.hv = hashstr(op.key);
+  //op.hv = hashstr(op.key);
   //item_lock(op.hv,cid);
   op_queue[op.opaque] = op;
   op_queue_size++;
@@ -806,7 +835,7 @@ void Connection::issue_set_miss(const char* key, const char* value, int length) 
   op.key = string(key);
   op.valuelen = length;
   op.type = Operation::SET;
-  op.hv = hashstr(op.key);
+  //op.hv = hashstr(op.key);
   op_queue[op.opaque] = op;
   op_queue_size++;
 
@@ -818,6 +847,37 @@ void Connection::issue_set_miss(const char* key, const char* value, int length) 
 
   //if (is_access)
   stats.log_access(op);
+}
+
+
+void Connection::issue_noop(double now) {
+    Operation op;
+    
+    if (now == 0.0) op.start_time = get_time();
+    else op.start_time = now;
+
+    //op.opaque = opaque++;
+    //if (opaque > OPAQUE_MAX) {
+    //    opaque = 0;
+    //}
+    
+    //op.valuelen = 0;
+    //op.type = Operation::NOOP;
+    //op.hv = hashstr(op.key);
+    //pthread_mutex_t *lock = (pthread_mutex_t*)item_trylock(op.hv,cid);
+    //if (lock != NULL) {
+    //item_lock(op.hv,cid);
+    //op_queue[op.opaque] = op;
+    //op_queue_size++;
+    binary_header_t h = { 0x80, CMD_NOOP, 0x0000,
+                          0x00, 0x00, {htons(0)},
+                          0x00 };
+    //h.opaque = htonl(op.opaque);
+
+    memcpy(issue_buf_pos,&h,24);
+    issue_buf_pos += 24;
+    issue_buf_size += 24;
+    issue_buf_n++;
 }
 
 /**
@@ -851,7 +911,7 @@ int Connection::issue_set(const char* key, const char* value, int length,
   op.key = string(key);
   op.valuelen = length;
   op.type = Operation::SET;
-  op.hv = hashstr(op.key);
+  //op.hv = hashstr(op.key);
   //pthread_mutex_t *lock = (pthread_mutex_t*)item_trylock(op.hv,cid);
   //if (lock != NULL) {
   //item_lock(op.hv,cid);
@@ -876,13 +936,15 @@ int Connection::issue_set(const char* key, const char* value, int length,
     memcpy(issue_buf_pos,value,length);
     issue_buf_pos += length;
     issue_buf_size += length;
+    issue_buf_n++;
 
     //if (read_state == IDLE) read_state = WAITING_FOR_SET;
     //l = prot->set_request(key, value, length, op->opaque);
-    if (read_state != LOADING) stats.tx_bytes += length + 32 + keylen;
 
-    //if (is_access)
-    stats.log_access(op);
+    //if (is_access) {
+        if (read_state != LOADING) stats.tx_bytes += length + 32 + keylen;
+        stats.log_access(op);
+    //}
     return 1;
   //} else {
   //  return 0;
@@ -1223,6 +1285,7 @@ void Connection::read_callback() {
   //
   found = true;
   //bool full_read = true;
+  //fprintf(stderr,"read_cb start with current queue of ops: %lu and issue_buf_n: %d\n",op_queue.size(),issue_buf_n);
 
   //if (op_queue.size() == 0) V("Spurious read callback.");
   bool full_read = true;
@@ -1235,10 +1298,13 @@ void Connection::read_callback() {
       break;
     }
       
-    int obj_size;
+    int opcode;
     uint32_t opaque;
-    full_read = prot->handle_response(input, done, found, obj_size, opaque);
+    full_read = prot->handle_response(input, done, found, opcode, opaque);
     if (full_read) {
+        if (opcode == CMD_NOOP) {
+            continue;
+        }
         op = &op_queue[opaque];
         //char out[128];
         //sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
@@ -1258,16 +1324,13 @@ void Connection::read_callback() {
                     string keystr = op->key;
                     strcpy(key, keystr.c_str());
                     int valuelen = op->valuelen;
-                
-                    //if not found and in getset mode, issue set
-                    if (options.read_file) {
-                        int index = lrand48() % (1024 * 1024);
-                        issue_set_miss(key, &random_char[index], valuelen);
+                    int index = lrand48() % (1024 * 1024);
+                    if (last_quiet) {
+                        issue_noop();
                     }
-                    else {
-                        int index = lrand48() % (1024 * 1024);
-                        issue_set_miss(key, &random_char[index], valuelen);
-                    }
+                    //issue_set_miss(key, &random_char[index], valuelen);
+                    issue_set(key, &random_char[index], valuelen, false);
+                    last_quiet = false; 
                     finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
@@ -1297,15 +1360,37 @@ void Connection::read_callback() {
   if (check_exit_condition(now)) {
       return;
   }
-  if (op_queue_size >= (size_t) options.depth) {
-      return;
+  //fprintf(stderr,"read_cb done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
+  //for (auto x : op_queue) {
+  //    cerr << x.first << ": " << x.second.key << endl;
+  //}
+  //buffer is ready to go!
+  //if (issue_buf_n >= options.depth) {
+  if (issue_buf_n > 0) {
+    //fprintf(stderr,"read_cb writing %d reqs\n",issue_buf_n);
+    //    char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+    //    fprintf(stderr,"-------------------------------------\n");
+    //    memcpy(output,issue_buf,issue_buf_size);
+    //    write(2,output,issue_buf_size);
+    //    fprintf(stderr,"\n-------------------------------------\n");
+    //
+    //    free(output);
+    bufferevent_write(bev, issue_buf, issue_buf_size);
+    memset(issue_buf,0,issue_buf_size);
+    issue_buf_pos = issue_buf;
+    issue_buf_size = 0;
+    issue_buf_n = 0;
   }
-  issue_getsetorset(now);
+
+  if (op_queue_size >= (uint32_t) options.depth) {
+    return;
+  } else {
+    issue_getsetorset(now);
+  }
   last_tx = now;
   stats.log_op(op_queue_size);
   //drive_write_machine();
   
-  //fprintf(stderr,"read_cb done with current queue of ops: %u\n",op_queue.size());
   // update events
   //if (bev != NULL) {
   //    // no pending response (nothing to read) and output buffer empty (nothing to write)

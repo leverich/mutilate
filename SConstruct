@@ -40,12 +40,12 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O0 -Wall -g')
-env.Append(CPPFLAGS = ' -O0 -Wall -g')
+#env.Append(CFLAGS = ' -O0 -Wall -g')
+#env.Append(CPPFLAGS = ' -O0 -Wall -g')
 #env.Append(CFLAGS = ' -O3 -Wall -g')
 #env.Append(CPPFLAGS = ' -O3 -Wall -g')
-#env.Append(CFLAGS = ' -O2 -Wall -g -pg')
-#env.Append(CPPFLAGS = ' -O2 -Wall -g -pg')
+env.Append(CFLAGS = ' -O2 -Wall -g')
+env.Append(CPPFLAGS = ' -O2 -Wall -g')
 
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 

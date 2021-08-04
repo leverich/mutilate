@@ -114,21 +114,22 @@ private:
 
   uint32_t opaque;
   int issue_buf_size;
+  int issue_buf_n;
   unsigned char *issue_buf_pos;
   unsigned char *issue_buf;
-
+  bool last_quiet;
   uint32_t total;
   uint32_t cid;
   int eof;
 
   //trace format variables
-  double r_time; // time in seconds
-  int r_appid; // prefix minus ':' char
-  int r_type;  //1 = get, 2 = set
-  int r_ksize; //key size
-  int r_vsize; //-1 or size of value if hit
-  int r_key; //op->key as int
-  int r_hit; //1 if hit, 0 if miss
+  //double r_time; // time in seconds
+  //int r_appid; // prefix minus ':' char
+  //int r_type;  //1 = get, 2 = set
+  //int r_ksize; //key size
+  //int r_vsize; //-1 or size of value if hit
+  //int r_key; //op->key as int
+  //int r_hit; //1 if hit, 0 if miss
 
   Protocol *prot;
   Generator *valuesize;
@@ -155,8 +156,9 @@ private:
 
   // request functions
   void issue_sasl();
+  void issue_noop(double now = 0.0);
   void issue_get(const char* key, double now = 0.0);
-  int issue_get_with_len(const char* key, int valuelen, double now = 0.0);
+  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false);
   int issue_set(const char* key, const char* value, int length,
                  double now = 0.0, bool is_access = false);
   void issue_set_miss(const char* key, const char* value, int length);

@@ -948,19 +948,26 @@ void* reader_thread(void *arg) {
                 string full_line(line);
                 //check the appid
                 int appid = 0;
-                if (trace_queue.size() > 1) {
-                    stringstream ss(full_line);
-
-                    string rT;
-                    string rApp;
-                    getline( ss, rT, ',');
-                    getline( ss, rApp, ',');
-                    appid = stoi(rApp);
-
+                if (full_line.length() > 4) {
+                    
+                    if (trace_queue.size() > 1) {
+                        stringstream ss(full_line);
+                        string rT;
+                        string rApp;
+                        getline( ss, rT, ',');
+                        getline( ss, rApp, ',');
+                        appid = stoi(rApp);
+                        if (appid < trace_queue.size()) {
+                            pthread_mutex_lock(mutexes[appid]);
+                            trace_queue[appid]->push(full_line);
+                            pthread_mutex_unlock(mutexes[appid]);
+                        }
+                    } else {
+                        pthread_mutex_lock(mutexes[appid]);
+                        trace_queue[appid]->push(full_line);
+                        pthread_mutex_unlock(mutexes[appid]);
+                    }
                 }
-                pthread_mutex_lock(mutexes[appid]);
-                trace_queue[appid]->push(full_line);
-                pthread_mutex_unlock(mutexes[appid]);
                 //bool res = trace_queue[appid]->try_enqueue(full_line);
                 //while (!res) {
                 //    //usleep(10);

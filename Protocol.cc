@@ -588,7 +588,7 @@ int ProtocolBinary::delete90_request() {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, int &obj_size, uint32_t &opaque) {
+bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -599,8 +599,11 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
   // Not whole response
   int targetLen = 24 + ntohl(h->body_len);
   if (length < targetLen) return false;
+    //fprintf(stderr,"handle resp - opcode: %u opaque: %u len: %u status: %u\n",
+    //        h->opcode,ntohl(h->opaque),
+    //        ntohl(h->body_len),ntohl(h->status));
 
-  obj_size = ntohl(h->body_len)-4;
+  opcode = h->opcode;
   opaque = ntohl(h->opaque);
   // If something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {

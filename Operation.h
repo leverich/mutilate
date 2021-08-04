@@ -11,7 +11,7 @@ public:
   double start_time, end_time;
 
   enum type_enum {
-    GET, SET, DELETE, SASL
+    GET, SET, DELETE, SASL, NOOP
   };
 
   type_enum type;
@@ -19,8 +19,6 @@ public:
   string key;
   int valuelen;
   uint32_t opaque;
-  size_t hv;
-  pthread_mutex_t *lock;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };
