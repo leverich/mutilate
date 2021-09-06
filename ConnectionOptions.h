@@ -5,6 +5,7 @@
 
 typedef struct {
   int apps;
+  bool miss_through;
   int connections;
   bool blocking;
   double lambda;

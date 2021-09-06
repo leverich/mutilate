@@ -596,8 +596,9 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
           reinterpret_cast<binary_header_t*>(evbuffer_pullup(input, 24));
   assert(h);
 
+  int bl = ntohl(h->body_len);
   // Not whole response
-  int targetLen = 24 + ntohl(h->body_len);
+  int targetLen = 24 + bl;
   if (length < targetLen) return false;
     //fprintf(stderr,"handle resp - opcode: %u opaque: %u len: %u status: %u\n",
     //        h->opcode,ntohl(h->opaque),
@@ -606,21 +607,29 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
   opcode = h->opcode;
   opaque = ntohl(h->opaque);
   // If something other than success, count it as a miss
-  if (h->opcode == CMD_GET && h->status) {
+  if (opcode == CMD_GET && h->status) {
       conn->stats.get_misses++;
       conn->stats.window_get_misses++;
       found = false;
   }
 
-  if (unlikely(h->opcode == CMD_SASL)) {
+  if (unlikely(opcode == CMD_SASL)) {
     if (h->status == RESP_OK) {
       V("SASL authentication succeeded");
     } else {
       DIE("SASL authentication failed");
     }
   }
+  
+  if (bl > 0 && opcode == 1) {
+    //fprintf(stderr,"set resp len: %u\n",bl);
+    void *data = malloc(bl);
+    data = evbuffer_pullup(input, bl);
+    free(data);
+  } else {
+    evbuffer_drain(input, targetLen);
+  }
 
-  evbuffer_drain(input, targetLen);
   conn->stats.rx_bytes += targetLen;
   done = true;
   return true;

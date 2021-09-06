@@ -82,6 +82,7 @@ struct reader_data {
   std::vector<queue<string>*> trace_queue;
   std::vector<pthread_mutex_t*> mutexes;
   string trace_filename;
+  int twitter_trace;
 };
 
 // struct evdns_base *evdns;
@@ -704,6 +705,7 @@ void go(const vector<string>& servers, options_t& options,
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
   rdata->mutexes = mutexes;
+  rdata->twitter_trace = options.twitter_trace;
   pthread_t rtid;
   if (options.read_file) {
       rdata->trace_filename = options.file_name; 
@@ -921,7 +923,7 @@ void* reader_thread(void *arg) {
   //std::vector<ConcurrentQueue<string>*> trace_queue = (std::vector<ConcurrentQueue<string>*>) rdata->trace_queue;
   std::vector<queue<string>*> trace_queue = (std::vector<queue<string>*>) rdata->trace_queue;
   std::vector<pthread_mutex_t*> mutexes = (std::vector<pthread_mutex_t*>) rdata->mutexes;
- 
+  int twitter_trace = rdata->twitter_trace;
   if (hasEnding(rdata->trace_filename,".zst")) {
         //init
         const char *filename = rdata->trace_filename.c_str();
@@ -948,15 +950,39 @@ void* reader_thread(void *arg) {
                 string full_line(line);
                 //check the appid
                 int appid = 0;
-                if (full_line.length() > 4) {
+                if (full_line.length() > 10) {
                     
                     if (trace_queue.size() > 1) {
                         stringstream ss(full_line);
                         string rT;
                         string rApp;
-                        getline( ss, rT, ',');
-                        getline( ss, rApp, ',');
-                        appid = stoi(rApp);
+                        if (twitter_trace == 1) {
+                            string rKey;
+                            string rKeySize;
+                            string rvaluelen;
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 6) {
+                                getline( ss, rT, ',' );
+                                getline( ss, rKey, ',' );
+                                getline( ss, rKeySize, ',' );
+                                getline( ss, rvaluelen, ',' );
+                                getline( ss, rApp, ',' );
+                                appid = stoi(rApp) % trace_queue.size();
+                            } else {
+                                continue;
+                            }
+                            
+                        } 
+                        else if (twitter_trace == 2) {
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 4) {
+                                getline( ss, rT, ',');
+                                getline( ss, rApp, ',');
+                                appid = stoi(rApp);
+                            } else {
+                                continue;
+                            }
+                        } 
                         if (appid < trace_queue.size()) {
                             pthread_mutex_lock(mutexes[appid]);
                             trace_queue[appid]->push(full_line);
@@ -1372,6 +1398,7 @@ void args_to_options(options_t* options) {
   options->twitter_trace = args.twitter_trace_arg;
 
   options->unix_socket = args.unix_socket_given;
+  options->miss_through = args.miss_through_given;
   options->successful_queries = args.successful_given;
   options->binary = args.binary_given;
   options->redis = args.redis_given;

@@ -35,6 +35,7 @@ option "assoc" - "We create hash tables by taking the truncating the \
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 option "apps" - "Number of apps, should eqaul total conns" int default="1"
+option "miss_through" - "All sets are considered dirty, expect for miss driven sets"
 
 option "read_file"  - "Read keys from file." string default=""
 option "twitter_trace"  - "use twitter memcached trace format from file." int default="0"

@@ -176,7 +176,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
   issue_buf = (unsigned char*)malloc(sizeof(unsigned char)*MAX_BUFFER_SIZE);
   memset(issue_buf,0,MAX_BUFFER_SIZE);
   issue_buf_pos = issue_buf;
-  
+  timer = evtimer_new(base, timer_cb, this);
+
 }
 
 //void Connection::set_queue(ConcurrentQueue<string>* a_trace_queue) {
@@ -185,6 +186,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
 void Connection::set_queue(queue<string>* a_trace_queue) {
     trace_queue = a_trace_queue;
+    //while (trace_queue->size() < 1);
+    //usleep(1000);
 }
 
 void Connection::set_lock(pthread_mutex_t* a_lock) {
@@ -257,7 +260,7 @@ int Connection::do_connect() {
  */
 Connection::~Connection() {
  
-  //event_free(timer);
+  event_free(timer);
   timer = NULL;
   // FIXME:  W("Drain op_q?");
   bufferevent_free(bev);
@@ -484,8 +487,7 @@ int Connection::issue_getsetorset(double now) {
  
   int ret = 0;
 
-  if (!options.read_file)
-  {
+  if (!options.read_file) {
         string keystr;
         char key[256];
         memset(key,0,256);
@@ -498,9 +500,9 @@ int Connection::issue_getsetorset(double now) {
         write(2,log,strlen(log));
         
         issue_get_with_len(key, length, now);
-  }
-  else
-  {
+
+  } else {
+
         string line;
         string rT;
         string rApp;
@@ -511,6 +513,7 @@ int Connection::issue_getsetorset(double now) {
         
 
         int nissued = 0;
+        //fprintf(stderr,"starting to issue, current %d\n",issue_buf_n);
         while (nissued < options.depth) {
             //bool res = trace_queue->try_dequeue(line);
             
@@ -523,17 +526,7 @@ int Connection::issue_getsetorset(double now) {
                     eof = 1;
                     return 1;
                 }
-                /*
-                pthread_mutex_lock(&flock);
-                if (kvfile.good()) {
-                    getline(kvfile,line);
-                    pthread_mutex_unlock(&flock);
-                }
-                else {
-                    pthread_mutex_unlock(&flock);
-                    return 1;
-                }
-                */
+                
                 stringstream ss(line);
                 int Op = 0;
                 int vl = 0; 
@@ -547,7 +540,8 @@ int Connection::issue_getsetorset(double now) {
                     getline( ss, rOp, ',' );
                     //vl = atoi(rvaluelen.c_str());
                     vl = stoi(rvaluelen);
-                    if (vl < 1) vl = 1;
+                    //vl = 100000;
+                    if (vl < 1) continue;
                     if (vl > 524000) vl = 524000;
                     if (rOp.compare("get") == 0) {
                         Op = 1;
@@ -566,11 +560,7 @@ int Connection::issue_getsetorset(double now) {
                     getline( ss, rvaluelen, ',' );
                     Op = stoi(rOp);
                     vl = stoi(rvaluelen);
-                    //char outbuf[1024];
-                    //sprintf(outbuf,"%s\n",line.c_str());
-                    //write(1,outbuf,strlen(outbuf));
-                }
-                else {
+                } else {
                     getline( ss, rT, ',' );
                     getline( ss, rApp, ',' );
                     getline( ss, rOp, ',' );
@@ -591,8 +581,8 @@ int Connection::issue_getsetorset(double now) {
                 switch(Op)
                 {
                   case 0:
-                      fprintf(stderr,"invalid line: %s, vl: %d @T: %d\n",
-                              key,vl,stoi(rT));
+                      //fprintf(stderr,"invalid line: %s, vl: %d @T: %d\n",
+                      //        key,vl,stoi(rT));
                       break;
                   case 1:
                       if (nissued < options.depth-1) {
@@ -602,9 +592,6 @@ int Connection::issue_getsetorset(double now) {
                         issued = issue_get_with_len(key, vl, now, false);
                         last_quiet = false;
                       }
-                      //} else {
-                      //  issued = issue_get_with_len(key, vl, now, false);
-                      //}
                       break;
                   case 2:
                       if (last_quiet) {
@@ -620,19 +607,30 @@ int Connection::issue_getsetorset(double now) {
                     nissued++;
                     total++;
                 } else {
-                      fprintf(stderr,"failed to issue line: %s, vl: %d @T: %d\n",
-                              key,vl,stoi(rT));
+                      if (Op != 0) {
+                        fprintf(stderr,"failed to issue line: %s, vl: %d @T: %d\n",
+                                key,vl,stoi(rT));
+                      }
                       break;
+                }
+            } else {
+                if (stats.accesses > 10) {
+                    eof = 1;
+                    return 1;
                 }
             }
         }
-        //fprintf(stderr,"getsetorset issuing %d reqs\n",issue_buf_n);
+        //fprintf(stderr,"done issue, current %d\n",issue_buf_n);
+        if (last_quiet) {
+            issue_noop();
+            last_quiet = false;
+        }
+        //fprintf(stderr,"getsetorset issuing %d reqs last quiet %d\n",issue_buf_n,last_quiet);
         //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
         //fprintf(stderr,"-------------------------------------\n");
         //memcpy(output,issue_buf,issue_buf_size);
         //write(2,output,issue_buf_size);
         //fprintf(stderr,"\n-------------------------------------\n");
-
         //free(output);
         //buffer is ready to go!
         bufferevent_write(bev, issue_buf, issue_buf_size);
@@ -641,10 +639,10 @@ int Connection::issue_getsetorset(double now) {
         issue_buf_pos = issue_buf;
         issue_buf_size = 0;
         issue_buf_n = 0;
+    }
 
-   }
-  
-  return ret;
+    return ret;
+
 }
 
 /**
@@ -924,12 +922,32 @@ int Connection::issue_set(const char* key, const char* value, int length,
     // each line is 4-bytes
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
                           0x08, 0x00, {htons(0)},
-                          htonl(keylen + 8 + length) };
+                          htonl(keylen + 8 + length) }; 
     h.opaque = htonl(op.opaque);
+    
+    memcpy(issue_buf_pos,&h,24);
+    issue_buf_pos += 24;
+    issue_buf_size += 24;
+    if (options.miss_through && is_access) {
+        uint32_t flags = htonl(16384);
+        memcpy(issue_buf_pos,&flags,4);
+        issue_buf_pos += 4;
+        issue_buf_size += 4;
+        uint32_t exp = 0;
+        memcpy(issue_buf_pos,&exp,4);
+        issue_buf_pos += 4;
+        issue_buf_size += 4;
 
-    memcpy(issue_buf_pos,&h,32);
-    issue_buf_pos += 32;
-    issue_buf_size += 32;
+    } else {
+        uint32_t flags = 0;
+        memcpy(issue_buf_pos,&flags,4);
+        issue_buf_pos += 4;
+        issue_buf_size += 4;
+        uint32_t exp = 0;
+        memcpy(issue_buf_pos,&exp,4);
+        issue_buf_pos += 4;
+        issue_buf_size += 4;
+    }
     memcpy(issue_buf_pos,key,keylen);
     issue_buf_pos += keylen;
     issue_buf_size += keylen;
@@ -937,6 +955,7 @@ int Connection::issue_set(const char* key, const char* value, int length,
     issue_buf_pos += length;
     issue_buf_size += length;
     issue_buf_n++;
+
 
     //if (read_state == IDLE) read_state = WAITING_FOR_SET;
     //l = prot->set_request(key, value, length, op->opaque);
@@ -1196,8 +1215,8 @@ void Connection::drive_write_machine(double now) {
       delay = iagen->generate();
       next_time = now + delay;
       double_to_tv(delay, &tv);
-      //evtimer_add(timer, &tv);
-      //write_state = WAITING_FOR_TIME;
+      evtimer_add(timer, &tv);
+      write_state = WAITING_FOR_TIME;
       write_state = ISSUING;
       break;
 
@@ -1206,23 +1225,22 @@ void Connection::drive_write_machine(double now) {
         write_state = WAITING_FOR_OPQ;
         return;
       }
-      //uncommenting for lowest delay possible
-      //if (op_queue.size() >= (size_t) options.depth) {
-      //  write_state = WAITING_FOR_OPQ;
-      //  return;
-      //} else if (now < next_time) {
-      //  write_state = WAITING_FOR_TIME;
-      //  break; // We want to run through the state machine one more time
-      //         // to make sure the timer is armed.
-      //} else if (options.moderate && now < last_rx + 0.00025) {
-      //  write_state = WAITING_FOR_TIME;
-      //  if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-      //    delay = last_rx + 0.00025 - now;
-      //    double_to_tv(delay, &tv);
-      //    evtimer_add(timer, &tv);
-      //  }
-      //  return;
-      //}
+      if (op_queue.size() >= (size_t) options.depth) {
+        write_state = WAITING_FOR_OPQ;
+        return;
+      } else if (now < next_time) {
+        write_state = WAITING_FOR_TIME;
+        break; // We want to run through the state machine one more time
+               // to make sure the timer is armed.
+      } else if (options.moderate && now < last_rx + 0.00025) {
+        write_state = WAITING_FOR_TIME;
+        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+          delay = last_rx + 0.00025 - now;
+          double_to_tv(delay, &tv);
+          evtimer_add(timer, &tv);
+        }
+        return;
+      }
 
       if (options.getsetorset) {
         int ret = issue_getsetorset(now);
@@ -1232,36 +1250,35 @@ void Connection::drive_write_machine(double now) {
       }
       
       last_tx = now;
-      //stats.log_op(op_queue.size());
+      stats.log_op(op_queue.size());
       stats.log_op(op_queue_size);
-      //next_time += iagen->generate();
+      next_time += iagen->generate();
 
-      //if (options.skip && options.lambda > 0.0 &&
-      //    now - next_time > 0.005000 &&
-      //    op_queue.size() >= (size_t) options.depth) {
+      if (options.skip && options.lambda > 0.0 &&
+          now - next_time > 0.005000 &&
+          op_queue.size() >= (size_t) options.depth) {
 
-      //  while (next_time < now - 0.004000) {
-      //    stats.skips++;
-      //    next_time += iagen->generate();
-      //  }
-      //}
+        while (next_time < now - 0.004000) {
+          stats.skips++;
+          next_time += iagen->generate();
+        }
+      }
       break;
 
     case WAITING_FOR_TIME:
       if (now < next_time) {
-        //if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-        //  delay = next_time - now;
-        //  double_to_tv(delay, &tv);
-        //  //evtimer_add(timer, &tv);
-        //}
-        //return;
+        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+          delay = next_time - now;
+          double_to_tv(delay, &tv);
+          evtimer_add(timer, &tv);
+        }
+        return;
       }
       write_state = ISSUING;
       break;
 
     case WAITING_FOR_OPQ:
       if (op_queue_size >= (size_t) options.depth) return;
-      //if (op_queue.size() >= (size_t) options.depth) return;
       write_state = ISSUING;
       break;
 
@@ -1303,6 +1320,9 @@ void Connection::read_callback() {
     full_read = prot->handle_response(input, done, found, opcode, opaque);
     if (full_read) {
         if (opcode == CMD_NOOP) {
+            //char out[128];
+            //sprintf(out,"conn: %u, reading noop\n",cid);
+            //write(2,out,strlen(out));
             continue;
         }
         op = &op_queue[opaque];
@@ -1310,6 +1330,12 @@ void Connection::read_callback() {
         //sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
         //write(2,out,strlen(out));
         //output_op(op,2,found);
+        if (op->key.length() < 1) {
+            //char out2[128];
+            //sprintf(out2,"conn: %u, bad op: %s\n",cid,op->key.c_str());
+            //write(2,out2,strlen(out2));
+            continue;
+        }
     } else {
         break;
     }
@@ -1318,20 +1344,20 @@ void Connection::read_callback() {
     switch (op->type) {
         case Operation::GET:
             if (done) {
-                if ((!found && options.getset) || 
-                    (!found && options.getsetorset)) {
+                if ( !found && (options.getset || options.getsetorset) ) {//  &&
+                    //(options.twitter_trace != 1)) {
                     char key[256];
                     string keystr = op->key;
                     strcpy(key, keystr.c_str());
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
+                    finish_op(op,0); // sets read_state = IDLE
                     if (last_quiet) {
                         issue_noop();
                     }
                     //issue_set_miss(key, &random_char[index], valuelen);
                     issue_set(key, &random_char[index], valuelen, false);
                     last_quiet = false; 
-                    finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
                     if (found) {
@@ -1367,14 +1393,18 @@ void Connection::read_callback() {
   //buffer is ready to go!
   //if (issue_buf_n >= options.depth) {
   if (issue_buf_n > 0) {
-    //fprintf(stderr,"read_cb writing %d reqs\n",issue_buf_n);
-    //    char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
-    //    fprintf(stderr,"-------------------------------------\n");
-    //    memcpy(output,issue_buf,issue_buf_size);
-    //    write(2,output,issue_buf_size);
-    //    fprintf(stderr,"\n-------------------------------------\n");
-    //
-    //    free(output);
+    if (last_quiet) {
+        issue_noop();
+        last_quiet = false;
+    }
+    //fprintf(stderr,"read_cb writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
+    //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+    //fprintf(stderr,"-------------------------------------\n");
+    //memcpy(output,issue_buf,issue_buf_size);
+    //write(2,output,issue_buf_size);
+    //fprintf(stderr,"\n-------------------------------------\n");
+    //free(output);
+
     bufferevent_write(bev, issue_buf, issue_buf_size);
     memset(issue_buf,0,issue_buf_size);
     issue_buf_pos = issue_buf;
@@ -1382,14 +1412,16 @@ void Connection::read_callback() {
     issue_buf_n = 0;
   }
 
-  if (op_queue_size >= (uint32_t) options.depth) {
-    return;
-  } else {
-    issue_getsetorset(now);
-  }
+  //if (op_queue_size > (uint32_t) options.depth) {
+  //  fprintf(stderr,"read_cb opqueue too big %d\n",op_queue_size);
+  //  return;
+  //} else {
+  //  fprintf(stderr,"read_cb issing  %d\n",op_queue_size);
+  //  issue_getsetorset(now);
+  //}
   last_tx = now;
   stats.log_op(op_queue_size);
-  //drive_write_machine();
+  drive_write_machine();
   
   // update events
   //if (bev != NULL) {
@@ -1412,9 +1444,16 @@ void Connection::write_callback() {
  * Callback for timer timeouts.
  */
 void Connection::timer_callback() { 
-    fprintf(stderr,"timer callback issuing requests!\n");
-    //drive_write_machine(); 
+  drive_write_machine();
 }
+//    //fprintf(stderr,"timer callback issuing requests!\n");
+//    if (op_queue_size >= (size_t) options.depth) {
+//      return;
+//    } else {
+//        double now = get_time();
+//        issue_getsetorset(now);
+//    }
+//}
 
 
 /* The follow are C trampolines for libevent callbacks. */
