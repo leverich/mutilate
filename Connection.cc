@@ -27,6 +27,7 @@
 #include <string.h>
 #include "blockingconcurrentqueue.h"
 
+//#define DEBUGC 
 
 using namespace moodycamel;
 std::hash<string> hashstr;
@@ -598,6 +599,7 @@ int Connection::issue_getsetorset(double now) {
                           issue_noop(now);
                       }
                       int index = lrand48() % (1024 * 1024);
+                      //issued = issue_get_with_len(key, vl, now, false);
                       issued = issue_set(key, &random_char[index], vl, now, true);
                       last_quiet = false;
                       break;
@@ -614,10 +616,13 @@ int Connection::issue_getsetorset(double now) {
                       break;
                 }
             } else {
-                if (stats.accesses > 10) {
-                    eof = 1;
-                    return 1;
-                }
+//#ifdef DEBUGC
+               return 0;
+                //fprintf(stderr,"trace_queue size: %d\n",trace_queue->size());
+                //if (stats.accesses > 10) {
+                //    eof = 1;
+                //    return 1;
+                //}
             }
         }
         //fprintf(stderr,"done issue, current %d\n",issue_buf_n);
@@ -625,13 +630,15 @@ int Connection::issue_getsetorset(double now) {
             issue_noop();
             last_quiet = false;
         }
-        //fprintf(stderr,"getsetorset issuing %d reqs last quiet %d\n",issue_buf_n,last_quiet);
-        //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
-        //fprintf(stderr,"-------------------------------------\n");
-        //memcpy(output,issue_buf,issue_buf_size);
-        //write(2,output,issue_buf_size);
-        //fprintf(stderr,"\n-------------------------------------\n");
-        //free(output);
+#ifdef DEBUGC
+        fprintf(stderr,"getsetorset issuing %d reqs last quiet %d\n",issue_buf_n,last_quiet);
+        char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+        fprintf(stderr,"-------------------------------------\n");
+        memcpy(output,issue_buf,issue_buf_size);
+        write(2,output,issue_buf_size);
+        fprintf(stderr,"\n-------------------------------------\n");
+        free(output);
+#endif
         //buffer is ready to go!
         bufferevent_write(bev, issue_buf, issue_buf_size);
         
@@ -698,7 +705,8 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now, bo
                           htonl(keylen) };
 
     if (quiet) {
-        h.opcode = CMD_GETQ;
+        //h.opcode = CMD_GETQ;
+        h.opcode = CMD_GET;
     }
     h.opaque = htonl(op.opaque);
 
@@ -1124,69 +1132,12 @@ void Connection::event_callback(short events) {
 
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev);
-    //if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
     if (err) fprintf(stderr,"DNS error: %s", evutil_gai_strerror(err));
     fprintf(stderr,"Got an error: %s\n",
         evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
-
-    //stats.print_header();
-    //stats.print_stats("read",   stats.get_sampler);
-    //stats.print_stats("update", stats.set_sampler);
-    //stats.print_stats("op_q",   stats.op_sampler);
-
-    //int total = stats.gets + stats.sets;
-
-    //printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
-    //       total / (stats.stop - stats.start),
-    //       total, stats.stop - stats.start);
-
-
-    //printf("\n");
-
-    //printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
-    //       (double) stats.get_misses/stats.gets*100);
-
-    //printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
-    //       (double) stats.skips / total * 100);
-
-    //printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
-    //       stats.rx_bytes,
-    //       (double) stats.rx_bytes / 1024 / 1024 / (stats.stop - stats.start));
-    //printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
-    //       stats.tx_bytes,
-    //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
-    
-    //if (
-    //DIE("BEV_EVENT_ERROR: %s", strerror(errno));
+    DIE("BEV_EVENT_ERROR: %s", strerror(errno));
 
   } else if (events & BEV_EVENT_EOF) {
-    //stats.print_header();
-    //stats.print_stats("read",   stats.get_sampler);
-    //stats.print_stats("update", stats.set_sampler);
-    //stats.print_stats("op_q",   stats.op_sampler);
-
-    //int total = stats.gets + stats.sets;
-
-    //printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
-    //       total / (stats.stop - stats.start),
-    //       total, stats.stop - stats.start);
-
-
-    //printf("\n");
-
-    //printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
-    //       (double) stats.get_misses/stats.gets*100);
-
-    //printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
-    //       (double) stats.skips / total * 100);
-
-    //printf("RX %10" PRIu64 " bytes : %6.1f MB/s\n",
-    //       stats.rx_bytes,
-    //       (double) stats.rx_bytes / 1024 / 1024 / (stats.stop - stats.start));
-    //printf("TX %10" PRIu64 " bytes : %6.1f MB/s\n",
-    //       stats.tx_bytes,
-    //       (double) stats.tx_bytes / 1024 / 1024 / (stats.stop - stats.start));
-
     //DIE("Unexpected EOF from server.");
     fprintf(stderr,"Unexpected EOF from server.");
     return;
@@ -1250,7 +1201,6 @@ void Connection::drive_write_machine(double now) {
       }
       
       last_tx = now;
-      stats.log_op(op_queue.size());
       stats.log_op(op_queue_size);
       next_time += iagen->generate();
 
@@ -1320,16 +1270,20 @@ void Connection::read_callback() {
     full_read = prot->handle_response(input, done, found, opcode, opaque);
     if (full_read) {
         if (opcode == CMD_NOOP) {
-            //char out[128];
-            //sprintf(out,"conn: %u, reading noop\n",cid);
-            //write(2,out,strlen(out));
+#ifdef DEBUGC
+            char out[128];
+            sprintf(out,"conn: %u, reading noop\n",cid);
+            write(2,out,strlen(out));
+#endif
             continue;
         }
         op = &op_queue[opaque];
-        //char out[128];
-        //sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
-        //write(2,out,strlen(out));
-        //output_op(op,2,found);
+#ifdef DEBUGC
+        char out[128];
+        sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
+        write(2,out,strlen(out));
+        output_op(op,2,found);
+#endif
         if (op->key.length() < 1) {
             //char out2[128];
             //sprintf(out2,"conn: %u, bad op: %s\n",cid,op->key.c_str());
@@ -1386,10 +1340,12 @@ void Connection::read_callback() {
   if (check_exit_condition(now)) {
       return;
   }
-  //fprintf(stderr,"read_cb done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
-  //for (auto x : op_queue) {
-  //    cerr << x.first << ": " << x.second.key << endl;
-  //}
+#ifdef DEBUGC
+  fprintf(stderr,"read_cb done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
+  for (auto x : op_queue) {
+      cerr << x.first << ": " << x.second.key << endl;
+  }
+#endif
   //buffer is ready to go!
   //if (issue_buf_n >= options.depth) {
   if (issue_buf_n > 0) {
@@ -1397,13 +1353,15 @@ void Connection::read_callback() {
         issue_noop();
         last_quiet = false;
     }
-    //fprintf(stderr,"read_cb writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
-    //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf,issue_buf_size);
-    //write(2,output,issue_buf_size);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    //free(output);
+#ifdef DEBUGC
+    fprintf(stderr,"read_cb writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
+    char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+    fprintf(stderr,"-------------------------------------\n");
+    memcpy(output,issue_buf,issue_buf_size);
+    write(2,output,issue_buf_size);
+    fprintf(stderr,"\n-------------------------------------\n");
+    free(output);
+#endif
 
     bufferevent_write(bev, issue_buf, issue_buf_size);
     memset(issue_buf,0,issue_buf_size);

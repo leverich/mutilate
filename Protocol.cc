@@ -623,9 +623,10 @@ bool ProtocolBinary::handle_response(evbuffer *input, bool &done, bool &found, i
   
   if (bl > 0 && opcode == 1) {
     //fprintf(stderr,"set resp len: %u\n",bl);
-    void *data = malloc(bl);
-    data = evbuffer_pullup(input, bl);
-    free(data);
+    //void *data = malloc(bl);
+    //data = evbuffer_pullup(input, bl);
+    //free(data);
+    evbuffer_drain(input, targetLen);
   } else {
     evbuffer_drain(input, targetLen);
   }

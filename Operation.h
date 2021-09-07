@@ -11,7 +11,7 @@ public:
   double start_time, end_time;
 
   enum type_enum {
-    GET, SET, DELETE, SASL, NOOP
+    GET, SET, DELETE, SASL, NOOP, TOUCH
   };
 
   type_enum type;
@@ -19,6 +19,7 @@ public:
   string key;
   int valuelen;
   uint32_t opaque;
+  uint8_t level;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

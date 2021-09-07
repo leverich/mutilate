@@ -53,6 +53,11 @@ using namespace moodycamel;
 
 ifstream kvfile;
 pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t reader_l;
+pthread_cond_t reader_ready;
+int reader_not_ready = 1;
+
 pthread_mutex_t *item_locks;
 int item_lock_hashpower = 13;
 
@@ -701,6 +706,9 @@ void go(const vector<string>& servers, options_t& options,
       *lock = PTHREAD_MUTEX_INITIALIZER;
       mutexes.push_back(lock);
   }
+  pthread_mutex_init(&reader_l, NULL);
+  pthread_cond_init(&reader_ready, NULL);
+
   //ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
   struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
   rdata->trace_queue = trace_queue;
@@ -713,7 +721,10 @@ void go(const vector<string>& servers, options_t& options,
       if ((error = pthread_create(&rtid, NULL,reader_thread,rdata)) != 0) {
         printf("reader thread failed to be created with error code %d\n", error);
       }
-      usleep(10);
+      pthread_mutex_lock(&reader_l);
+      while (reader_not_ready) 
+        pthread_cond_wait(&reader_ready,&reader_l);
+      pthread_mutex_unlock(&reader_l);
       
   }
 
@@ -1002,12 +1013,25 @@ void* reader_thread(void *arg) {
                 //}
                 n++;
                 if (n % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, waits: %lu\n",n,nwrites);
+                //if (n > 100000000) {
+                //    pthread_mutex_lock(&reader_l);
+                //    reader_not_ready = 0; 
+                //    pthread_mutex_unlock(&reader_l);
+                //    pthread_cond_signal(&reader_ready);
+                //}
 
             }
             free(line_p);
             free(ftrace);
             trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
         }
+        pthread_mutex_lock(&reader_l);
+        if (reader_not_ready) {
+            reader_not_ready = 0;
+        }
+        pthread_mutex_unlock(&reader_l);
+        pthread_cond_signal(&reader_ready);
+
   	    string eof = "EOF";
   	    for (int i = 0; i < 1000; i++) {
                 for (int j = 0; j < trace_queue.size(); j++) {
