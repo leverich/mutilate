@@ -34,8 +34,13 @@ using namespace moodycamel;
 
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr);
 void bev_read_cb(struct bufferevent *bev, void *ptr);
+void bev_event_cb1(struct bufferevent *bev, short events, void *ptr);
+void bev_read_cb1(struct bufferevent *bev, void *ptr);
+void bev_event_cb2(struct bufferevent *bev, short events, void *ptr);
+void bev_read_cb2(struct bufferevent *bev, void *ptr);
 void bev_write_cb(struct bufferevent *bev, void *ptr);
 void timer_cb(evutil_socket_t fd, short what, void *ptr);
+void timer_cb_m(evutil_socket_t fd, short what, void *ptr);
 
 class Protocol;
 
@@ -171,11 +176,11 @@ private:
 
 class ConnectionMulti {
 public:
-  Connection(struct event_base* _base1, struct event_base* _base2, struct evdns_base* _evdns,
+  ConnectionMulti(struct event_base* _base1, struct event_base* _base2, struct evdns_base* _evdns,
              string _hostname1, string _hostname2, string _port, options_t options,
              bool sampling = true);
 
-  ~Connection();
+  ~ConnectionMulti();
 
   int do_connect();
 
@@ -192,9 +197,11 @@ public:
   void reset();
   bool check_exit_condition(double now = 0.0);
 
+  void event_callback1(short events);
+  void event_callback2(short events);
+  void read_callback1();
+  void read_callback2();
   // event callbacks
-  void event_callback(short events);
-  void read_callback();
   void write_callback();
   void timer_callback();
   
@@ -204,7 +211,8 @@ public:
   void set_lock(pthread_mutex_t* a_lock);
 
 private:
-  string hostname;
+  string hostname1;
+  string hostname2;
   string port;
 
   struct event_base *base1;
@@ -243,7 +251,7 @@ private:
   // Parameters to track progress of the data loader.
   int loader_issued, loader_completed;
 
-  uint32_t **opaque;
+  uint32_t *opaque;
   int *issue_buf_size;
   int *issue_buf_n;
   unsigned char **issue_buf_pos;
@@ -253,15 +261,15 @@ private:
   uint32_t total;
   uint32_t cid;
   int eof;
+  
+  std::vector<std::unordered_map<uint32_t,Operation>> op_queue;
+  uint32_t *op_queue_size;
 
 
-  Protocol *prot;
   Generator *valuesize;
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
-  std::vector<std::unordered_map<uint32_t,Operation>> op_queue;
-  uint32_t op_queue_size;
   pthread_mutex_t* lock;
   //ConcurrentQueue<string> *trace_queue;
   queue<string> *trace_queue;
@@ -276,11 +284,10 @@ private:
 
   // request functions
   void issue_sasl();
-  void issue_noop(double now = 0.0);
-  void issue_get(const char* key, double now = 0.0);
-  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false);
+  void issue_noop(double now = 0.0, int level = 1);
+  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false, int level = 1);
   int issue_set(const char* key, const char* value, int length,
-                 double now = 0.0, bool is_access = false);
+                 double now = 0.0, bool real_set = false, int level = 1);
 
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);

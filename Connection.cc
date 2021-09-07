@@ -658,7 +658,6 @@ int Connection::issue_getsetorset(double now) {
 int Connection::issue_get_with_len(const char* key, int valuelen, double now, bool quiet) {
   //Operation *op = new Operation;
   Operation op; // = new Operation;
-  int l;
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -729,7 +728,6 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now, bo
  */
 void Connection::issue_get(const char* key, double now) {
   Operation op;
-  int l;
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -763,7 +761,7 @@ void Connection::issue_get(const char* key, double now) {
   op_queue_size++;
 
   if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  l = prot->get_request(key,op.opaque);
+  int l = prot->get_request(key,op.opaque);
   if (read_state != LOADING) stats.tx_bytes += l;
   
   stats.log_access(op);
@@ -893,7 +891,6 @@ int Connection::issue_set(const char* key, const char* value, int length,
                            double now, bool is_access) {
   //Operation *op = new Operation;
   Operation op; // = new Operation;
-  int l;
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();

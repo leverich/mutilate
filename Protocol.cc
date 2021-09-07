@@ -110,24 +110,24 @@ int ProtocolRESP::get_request(const char* key, uint32_t opaque) {
 
 int ProtocolRESP::hset_request(const char* key, const char* value, int len) {
   
-  int l;
+  int l = 0;
   //hash is first n-assoc bytes
   //field is last assoc bytes
   //value is value
-  int assoc = opts.assoc;
-  char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
-  char* field = (char*)malloc(sizeof(char)*(assoc+1)); 
-  strncpy(hash, key, strlen(key)-assoc);
-  strncpy(field,key+strlen(key)-assoc,assoc);
-  hash[strlen(key)-assoc] = '\0';
-  field[assoc] = '\0';
-  l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*4\r\n$4\r\nHSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n",
-                          strlen(hash),hash,strlen(field),field,len,value);
-  l += len + 2;
-  if (read_state == IDLE) read_state = WAITING_FOR_END;
-  free(hash);
-  free(field);
+  //int assoc = opts.assoc;
+  //char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
+  //char* field = (char*)malloc(sizeof(char)*(assoc+1)); 
+  //strncpy(hash, key, strlen(key)-assoc);
+  //strncpy(field,key+strlen(key)-assoc,assoc);
+  //hash[strlen(key)-assoc] = '\0';
+  //field[assoc] = '\0';
+  //l = evbuffer_add_printf(bufferevent_get_output(bev),
+  //                        "*4\r\n$4\r\nHSET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n$%d\r\n%s\r\n",
+  //                        strlen(hash),hash,strlen(field),field,len,value);
+  //l += len + 2;
+  //if (read_state == IDLE) read_state = WAITING_FOR_END;
+  //free(hash);
+  //free(field);
   return l;
 
 }
@@ -140,23 +140,23 @@ int ProtocolRESP::hset_request(const char* key, const char* value, int len) {
  * the vast vast majority are going to be 20 bytes.
  */
 int ProtocolRESP::hget_request(const char* key) {
-  int l;
+  int l = 0;
   //hash is first n-assoc bytes
   //field is last assoc bytes
-  int assoc = opts.assoc;
-  char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
-  char* field = (char*)malloc(sizeof(char)*(assoc+1));
-  strncpy(hash, key, strlen(key)-assoc);
-  strncpy(field,key+strlen(key)-assoc,assoc);
-  hash[strlen(key)-assoc] = '\0';
-  field[assoc] = '\0';
-  l = evbuffer_add_printf(bufferevent_get_output(bev),
-                          "*3\r\n$4\r\nHGET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n",
-                          strlen(hash),hash,strlen(field),field);
+  //int assoc = opts.assoc;
+  //char* hash = (char*)malloc(sizeof(char)*((strlen(key)-assoc)+1));
+  //char* field = (char*)malloc(sizeof(char)*(assoc+1));
+  //strncpy(hash, key, strlen(key)-assoc);
+  //strncpy(field,key+strlen(key)-assoc,assoc);
+  //hash[strlen(key)-assoc] = '\0';
+  //field[assoc] = '\0';
+  //l = evbuffer_add_printf(bufferevent_get_output(bev),
+  //                        "*3\r\n$4\r\nHGET\r\n$%lu\r\n%s\r\n$%lu\r\n%s\r\n",
+  //                        strlen(hash),hash,strlen(field),field);
 
-  if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  free(hash);
-  free(field);
+  //if (read_state == IDLE) read_state = WAITING_FOR_GET;
+  //free(hash);
+  //free(field);
   return l;
 }
 

@@ -32,15 +32,9 @@
 //#define DEBUGMC
 
 using namespace moodycamel;
-std::hash<string> hashstr;
 
-extern ifstream kvfile;
-extern pthread_mutex_t flock;
-extern int item_lock_hashpower;
-
-
-pthread_mutex_t cid_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t connids = 1;
+pthread_mutex_t cid_lock_m = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t connids_m = 1;
 
 
 void ConnectionMulti::output_op(Operation *op, int type, bool found) {
@@ -129,23 +123,25 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base1, struct event_base* _
   
   last_tx = last_rx = 0.0;
 
-  pthread_mutex_lock(&cid_lock);
-  cid = connids++;
-  pthread_mutex_unlock(&cid_lock);
+  pthread_mutex_lock(&cid_lock_m);
+  cid = connids_m++;
+  pthread_mutex_unlock(&cid_lock_m);
   
-  op_queue_size = malloc(sizeof(int)*LEVELS+1);
-  opaque = malloc(sizeof(int)*LEVELS+1);
+  op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
+  opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   
-  issue_buf_n = malloc(sizeof(int)*LEVELS+1);
-  issue_buf = malloc(sizeof(unsigned char*)*LEVELS+1);
-  issue_buf_pos = malloc(sizeof(unsigned char*)*LEVELS+1);
+  issue_buf_n = (int*)malloc(sizeof(int)*(LEVELS+1));
+  issue_buf = (unsigned char**)malloc(sizeof(unsigned char*)*(LEVELS+1));
+  issue_buf_pos = (unsigned char**)malloc(sizeof(unsigned char*)*(LEVELS+1));
 
   for (int i = 1; i <= LEVELS; i++) {
       op_queue_size[i] = 0;
       opaque[i] = 0;
 
       issue_buf[i] = (unsigned char*)malloc(sizeof(unsigned char)*MAX_BUFFER_SIZE);
-      issue_buf_pos[i] = issue_buf;
+      std::unordered_map<uint32_t,Operation> op_q;
+      op_queue.push_back(op_q);
+      issue_buf_pos[i] = issue_buf[i];
       issue_buf_size[i] = 0;
 
   }
@@ -173,11 +169,11 @@ int ConnectionMulti::do_connect() {
   if (options.unix_socket) {
   
     bev1 = bufferevent_socket_new(base1, -1, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(bev1, bev1_read_cb, bev1_write_cb, bev1_event_cb, this);
+    bufferevent_setcb(bev1, bev_read_cb1, bev_write_cb, bev_event_cb1, this);
     bufferevent_enable(bev1, EV_READ | EV_WRITE);
     
     bev2 = bufferevent_socket_new(base2, -1, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(bev2, bev2_read_cb, bev2_write_cb, bev2_event_cb, this);
+    bufferevent_setcb(bev2, bev_read_cb2, bev_write_cb, bev_event_cb2, this);
     bufferevent_enable(bev2, EV_READ | EV_WRITE);
 
     struct sockaddr_un sin1;
@@ -190,13 +186,6 @@ int ConnectionMulti::do_connect() {
     int err = bufferevent_socket_connect(bev1,  (struct sockaddr*)&sin1, addrlen);
     if (err == 0) {
         connected = 1;
-        if (options.binary) {
-          prot = new ProtocolBinary(options, this, bev1);
-        } else if (options.redis) {
-          prot = new ProtocolRESP(options, this, bev1);
-        } else {
-          prot = new ProtocolAscii(options, this, bev1);
-        }
     } else {
 	connected = 0;
         err = errno;
@@ -210,16 +199,9 @@ int ConnectionMulti::do_connect() {
     strcpy(sin2.sun_path, hostname2.c_str());
 
     addrlen = sizeof(sin2);
-    int err = bufferevent_socket_connect(bev2,  (struct sockaddr*)&sin2, addrlen);
+    err = bufferevent_socket_connect(bev2,  (struct sockaddr*)&sin2, addrlen);
     if (err == 0) {
         connected = 1;
-        if (options.binary) {
-          prot = new ProtocolBinary(options, this, bev2);
-        } else if (options.redis) {
-          prot = new ProtocolRESP(options, this, bev2);
-        } else {
-          prot = new ProtocolAscii(options, this, bev2);
-        }
     } else {
 	connected = 0;
         err = errno;
@@ -370,7 +352,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
                   }
                   int index = lrand48() % (1024 * 1024);
                   issued = issue_set(key, &random_char[index], vl, now, true,1);
-                  last_quiet = false;
+                  last_quiet1 = false;
                   break;
             
             }
@@ -392,7 +374,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
     }
     if (last_quiet1) {
         issue_noop(now,1);
-        last_quiet = false;
+        last_quiet1 = false;
     }
 #ifdef DEBUGMC
     fprintf(stderr,"getsetorset issuing %d reqs last quiet %d\n",issue_buf_n,last_quiet);
@@ -404,12 +386,12 @@ int ConnectionMulti::issue_getsetorset(double now) {
     free(output);
 #endif
     //buffer is ready to go!
-    bufferevent_write(bev1, issue_buf1, issue_buf_size1);
+    bufferevent_write(bev1, issue_buf[1], issue_buf_size[1]);
     
-    memset(issue_buf1,0,issue_buf_size1);
-    issue_buf_pos1 = issue_buf1;
-    issue_buf_size1 = 0;
-    issue_buf_n1 = 0;
+    memset(issue_buf[1],0,issue_buf_size[1]);
+    issue_buf_pos[1] = issue_buf[1];
+    issue_buf_size[1] = 0;
+    issue_buf_n[1] = 0;
 
     return ret;
 
@@ -420,7 +402,6 @@ int ConnectionMulti::issue_getsetorset(double now) {
  */
 int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, int level) {
   Operation op;
-  int l;
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -500,7 +481,6 @@ void ConnectionMulti::issue_noop(double now, int level) {
 int ConnectionMulti::issue_set(const char* key, const char* value, int length,
                            double now, bool real_set, int level) {
   Operation op; 
-  int l;
 
 #if HAVE_CLOCK_GETTIME
   op.start_time = get_time_accurate();
@@ -703,10 +683,10 @@ bool ConnectionMulti::check_exit_condition(double now) {
 /**
  * Handle new connection and error events.
  */
-void ConnectionMulti::event_callback(short events) {
+void ConnectionMulti::event_callback1(short events) {
   if (events & BEV_EVENT_CONNECTED) {
-    D("Connected to %s:%s.", hostname.c_str(), port.c_str());
-    int fd = bufferevent_getfd(bev);
+    D("Connected to %s:%s.", hostname1.c_str(), port.c_str());
+    int fd = bufferevent_getfd(bev1);
     if (fd < 0) DIE("bufferevent_getfd");
 
     if (!options.no_nodelay && !options.unix_socket) {
@@ -716,14 +696,42 @@ void ConnectionMulti::event_callback(short events) {
         DIE("setsockopt()");
     }
 
-    read_state = CONN_SETUP;
-    if (prot->setup_connection_w()) {
-      read_state = IDLE;
-    }
     drive_write_machine(); 
 
   } else if (events & BEV_EVENT_ERROR) {
-    int err = bufferevent_socket_get_dns_error(bev);
+    int err = bufferevent_socket_get_dns_error(bev1);
+    //if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
+    if (err) fprintf(stderr,"DNS error: %s", evutil_gai_strerror(err));
+    fprintf(stderr,"Got an error: %s\n",
+        evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
+
+    DIE("BEV_EVENT_ERROR: %s", strerror(errno));
+
+  } else if (events & BEV_EVENT_EOF) {
+    fprintf(stderr,"Unexpected EOF from server.");
+    return;
+  }
+}
+
+/**
+ * Handle new connection and error events.
+ */
+void ConnectionMulti::event_callback2(short events) {
+  if (events & BEV_EVENT_CONNECTED) {
+    D("Connected to %s:%s.", hostname2.c_str(), port.c_str());
+    int fd = bufferevent_getfd(bev2);
+    if (fd < 0) DIE("bufferevent_getfd");
+
+    if (!options.no_nodelay && !options.unix_socket) {
+      int one = 1;
+      if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
+                     (void *) &one, sizeof(one)) < 0)
+        DIE("setsockopt()");
+    }
+
+
+  } else if (events & BEV_EVENT_ERROR) {
+    int err = bufferevent_socket_get_dns_error(bev2);
     //if (err) DIE("DNS error: %s", evutil_gai_strerror(err));
     if (err) fprintf(stderr,"DNS error: %s", evutil_gai_strerror(err));
     fprintf(stderr,"Got an error: %s\n",
@@ -765,11 +773,7 @@ void ConnectionMulti::drive_write_machine(double now) {
       break;
 
     case ISSUING:
-      if (op_queue_size >= (size_t) options.depth) {
-        write_state = WAITING_FOR_OPQ;
-        return;
-      }
-      if (op_queue.size() >= (size_t) options.depth) {
+      if (op_queue_size[1] >= (size_t) options.depth) {
         write_state = WAITING_FOR_OPQ;
         return;
       } else if (now < next_time) {
@@ -830,11 +834,60 @@ void ConnectionMulti::drive_write_machine(double now) {
   }
 }
 
+
+
+/**
+ * Tries to consume a binary response (in its entirety) from an evbuffer.
+ *
+ * @param input evBuffer to read response from
+ * @return  true if consumed, false if not enough data in buffer.
+ */
+static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque) {
+  // Read the first 24 bytes as a header
+  int length = evbuffer_get_length(input);
+  if (length < 24) return false;
+  binary_header_t* h =
+          reinterpret_cast<binary_header_t*>(evbuffer_pullup(input, 24));
+  assert(h);
+
+  int bl = ntohl(h->body_len);
+  // Not whole response
+  int targetLen = 24 + bl;
+  if (length < targetLen) return false;
+    //fprintf(stderr,"handle resp - opcode: %u opaque: %u len: %u status: %u\n",
+    //        h->opcode,ntohl(h->opaque),
+    //        ntohl(h->body_len),ntohl(h->status));
+
+  opcode = h->opcode;
+  opaque = ntohl(h->opaque);
+  // If something other than success, count it as a miss
+  if (opcode == CMD_GET && h->status) {
+      conn->stats.get_misses++;
+      conn->stats.window_get_misses++;
+      found = false;
+  }
+
+  
+  if (bl > 0 && opcode == 1) {
+    //fprintf(stderr,"set resp len: %u\n",bl);
+    //void *data = malloc(bl);
+    //data = evbuffer_pullup(input, bl);
+    //free(data);
+    evbuffer_drain(input, targetLen);
+  } else {
+    evbuffer_drain(input, targetLen);
+  }
+
+  conn->stats.rx_bytes += targetLen;
+  done = true;
+  return true;
+}
+
 /**
  * Handle incoming data (responses).
  */
-void Connection::read_callback() {
-  struct evbuffer *input = bufferevent_get_input(bev);
+void ConnectionMulti::read_callback1() {
+  struct evbuffer *input = bufferevent_get_input(bev1);
 
   Operation *op = NULL;
   bool done, found;
@@ -842,8 +895,8 @@ void Connection::read_callback() {
   //initially assume found (for sets that may come through here)
   //is this correct? do we want to assume true in case that 
   //GET was found, but wrong value size (i.e. update value)
-  //
   found = true;
+
   //bool full_read = true;
   //fprintf(stderr,"read_cb start with current queue of ops: %lu and issue_buf_n: %d\n",op_queue.size(),issue_buf_n);
 
@@ -851,32 +904,32 @@ void Connection::read_callback() {
   bool full_read = true;
   while (full_read) {
     
-    if (read_state == CONN_SETUP) {
-      assert(options.binary);
-      if (!prot->setup_connection_r(input)) return;
-      read_state = IDLE;
-      break;
-    }
       
     int opcode;
     uint32_t opaque;
-    full_read = prot->handle_response(input, done, found, opcode, opaque);
+    full_read = handle_response(this,input, done, found, opcode, opaque);
     if (full_read) {
         if (opcode == CMD_NOOP) {
-            //char out[128];
-            //sprintf(out,"conn: %u, reading noop\n",cid);
-            //write(2,out,strlen(out));
+#ifdef DEBUGMC
+            char out[128];
+            sprintf(out,"conn l1: %u, reading noop\n",cid);
+            write(2,out,strlen(out));
+#endif
             continue;
         }
-        op = &op_queue[opaque];
-        //char out[128];
-        //sprintf(out,"conn: %u, reading opaque: %u\n",cid,opaque);
-        //write(2,out,strlen(out));
-        //output_op(op,2,found);
+        op = &op_queue[1][opaque];
+#ifdef DEBUGMC
+        char out[128];
+        sprintf(out,"conn l1: %u, reading opaque: %u\n",cid,opaque);
+        write(2,out,strlen(out));
+        output_op(op,2,found);
+#endif
         if (op->key.length() < 1) {
-            //char out2[128];
-            //sprintf(out2,"conn: %u, bad op: %s\n",cid,op->key.c_str());
-            //write(2,out2,strlen(out2));
+#ifdef DEBUGMC
+            char out2[128];
+            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key.c_str());
+            write(2,out2,strlen(out2));
+#endif
             continue;
         }
     } else {
@@ -895,12 +948,11 @@ void Connection::read_callback() {
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     finish_op(op,0); // sets read_state = IDLE
-                    if (last_quiet) {
-                        issue_noop();
+                    if (last_quiet1) {
+                        issue_noop(1);
                     }
-                    //issue_set_miss(key, &random_char[index], valuelen);
-                    issue_set(key, &random_char[index], valuelen, false);
-                    last_quiet = false; 
+                    issue_set(key, &random_char[index], valuelen, false, 1);
+                    last_quiet1 = false; 
                     
                 } else {
                     if (found) {
@@ -911,7 +963,7 @@ void Connection::read_callback() {
                 }
             } else {
                 char out[128];
-                sprintf(out,"conn: %u, not done reading, should do something",cid);
+                sprintf(out,"conn l1: %u, not done reading, should do something",cid);
                 write(2,out,strlen(out));
             }
             break;
@@ -929,41 +981,177 @@ void Connection::read_callback() {
   if (check_exit_condition(now)) {
       return;
   }
-  //fprintf(stderr,"read_cb done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
-  //for (auto x : op_queue) {
-  //    cerr << x.first << ": " << x.second.key << endl;
-  //}
+#ifdef DEBUGMC
+  fprintf(stderr,"read_cb1 done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
+  for (auto x : op_queue) {
+      cerr << x.first << ": " << x.second.key << endl;
+  }
+#endif
   //buffer is ready to go!
-  //if (issue_buf_n >= options.depth) {
-  if (issue_buf_n > 0) {
-    if (last_quiet) {
-        issue_noop();
-        last_quiet = false;
+  if (issue_buf_n[1] > 0) {
+    if (last_quiet1) {
+        issue_noop(now,1);
+        last_quiet1 = false;
     }
-    //fprintf(stderr,"read_cb writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
-    //char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf,issue_buf_size);
-    //write(2,output,issue_buf_size);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    //free(output);
+#ifdef DEBUGMC
+    fprintf(stderr,"read_cb1 writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
+    char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+    fprintf(stderr,"-------------------------------------\n");
+    memcpy(output,issue_buf,issue_buf_size);
+    write(2,output,issue_buf_size);
+    fprintf(stderr,"\n-------------------------------------\n");
+    free(output);
+#endif
 
-    bufferevent_write(bev, issue_buf, issue_buf_size);
-    memset(issue_buf,0,issue_buf_size);
-    issue_buf_pos = issue_buf;
-    issue_buf_size = 0;
-    issue_buf_n = 0;
+    bufferevent_write(bev1, issue_buf[1], issue_buf_size[1]);
+    memset(issue_buf[1],0,issue_buf_size[1]);
+    issue_buf_pos[1] = issue_buf[1];
+    issue_buf_size[1] = 0;
+    issue_buf_n[1] = 0;
   }
 
-  //if (op_queue_size > (uint32_t) options.depth) {
-  //  fprintf(stderr,"read_cb opqueue too big %d\n",op_queue_size);
-  //  return;
-  //} else {
-  //  fprintf(stderr,"read_cb issing  %d\n",op_queue_size);
-  //  issue_getsetorset(now);
-  //}
   last_tx = now;
-  stats.log_op(op_queue_size);
+  stats.log_op(op_queue_size[1]);
+  drive_write_machine();
+  
+  // update events
+  //if (bev != NULL) {
+  //    // no pending response (nothing to read) and output buffer empty (nothing to write)
+  //    if ((op_queue.size() == 0) && (evbuffer_get_length(bufferevent_get_output(bev)) == 0)) {
+  //        bufferevent_disable(bev, EV_WRITE|EV_READ);
+  //    }
+  //}
+}
+
+/**
+ * Handle incoming data (responses).
+ */
+void ConnectionMulti::read_callback2() {
+  struct evbuffer *input = bufferevent_get_input(bev2);
+
+  Operation *op = NULL;
+  bool done, found;
+
+  //initially assume found (for sets that may come through here)
+  //is this correct? do we want to assume true in case that 
+  //GET was found, but wrong value size (i.e. update value)
+  found = true;
+
+  //bool full_read = true;
+  //fprintf(stderr,"read_cb start with current queue of ops: %lu and issue_buf_n: %d\n",op_queue.size(),issue_buf_n);
+
+  //if (op_queue.size() == 0) V("Spurious read callback.");
+  bool full_read = true;
+  while (full_read) {
+    
+      
+    int opcode;
+    uint32_t opaque;
+    full_read = handle_response(this,input, done, found, opcode, opaque);
+    if (full_read) {
+        if (opcode == CMD_NOOP) {
+#ifdef DEBUGMC
+            char out[128];
+            sprintf(out,"conn l2: %u, reading noop\n",cid);
+            write(2,out,strlen(out));
+#endif
+            continue;
+        }
+        op = &op_queue[2][opaque];
+#ifdef DEBUGMC
+        char out[128];
+        sprintf(out,"conn l2: %u, reading opaque: %u\n",cid,opaque);
+        write(2,out,strlen(out));
+        output_op(op,2,found);
+#endif
+        if (op->key.length() < 1) {
+#ifdef DEBUGMC
+            char out2[128];
+            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key.c_str());
+            write(2,out2,strlen(out2));
+#endif
+            continue;
+        }
+    } else {
+        break;
+    }
+    
+
+    switch (op->type) {
+        case Operation::GET:
+            if (done) {
+                if ( !found && (options.getset || options.getsetorset) ) {//  &&
+                    //(options.twitter_trace != 1)) {
+                    char key[256];
+                    string keystr = op->key;
+                    strcpy(key, keystr.c_str());
+                    int valuelen = op->valuelen;
+                    int index = lrand48() % (1024 * 1024);
+                    finish_op(op,0); // sets read_state = IDLE
+                    if (last_quiet2) {
+                        issue_noop(0,2);
+                    }
+                    issue_set(key, &random_char[index], valuelen, false, 2);
+                    last_quiet2 = false; 
+                    
+                } else {
+                    if (found) {
+                        finish_op(op,1);
+                    } else {
+                        finish_op(op,0);
+                    }
+                }
+            } else {
+                char out[128];
+                sprintf(out,"conn l2: %u, not done reading, should do something",cid);
+                write(2,out,strlen(out));
+            }
+            break;
+        case Operation::SET:
+            finish_op(op,1);
+            break;
+        default: 
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            DIE("not implemented");
+    }
+
+  }
+
+  double now = get_time();
+  if (check_exit_condition(now)) {
+      return;
+  }
+#ifdef DEBUGMC
+  fprintf(stderr,"read_cb2 done with current queue of ops: %d and issue_buf_n: %d\n",op_queue_size,issue_buf_n);
+  for (auto x : op_queue) {
+      cerr << x.first << ": " << x.second.key << endl;
+  }
+#endif
+  //buffer is ready to go!
+  if (issue_buf_n[2] > 0) {
+    if (last_quiet2) {
+        issue_noop(now,2);
+        last_quiet2 = false;
+    }
+#ifdef DEBUGMC
+    fprintf(stderr,"read_cb2 writing %d reqs, last quiet %d\n",issue_buf_n,last_quiet);
+    char *output = (char*)malloc(sizeof(char)*(issue_buf_size+512));
+    fprintf(stderr,"-------------------------------------\n");
+    memcpy(output,issue_buf,issue_buf_size);
+    write(2,output,issue_buf_size);
+    fprintf(stderr,"\n-------------------------------------\n");
+    free(output);
+#endif
+
+    bufferevent_write(bev2, issue_buf[2], issue_buf_size[2]);
+    memset(issue_buf[2],0,issue_buf_size[2]);
+    issue_buf_pos[2] = issue_buf[2];
+    issue_buf_size[2] = 0;
+    issue_buf_n[2] = 0;
+  }
+
+  last_tx = now;
+  stats.log_op(op_queue_size[2]);
   drive_write_machine();
   
   // update events
@@ -978,7 +1166,7 @@ void Connection::read_callback() {
 /**
  * Callback called when write requests finish.
  */
-void Connection::write_callback() {
+void ConnectionMulti::write_callback() {
 
     //fprintf(stderr,"loaded evbuffer with ops: %u\n",op_queue.size());
 }
@@ -986,38 +1174,37 @@ void Connection::write_callback() {
 /**
  * Callback for timer timeouts.
  */
-void Connection::timer_callback() { 
+void ConnectionMulti::timer_callback() { 
   drive_write_machine();
 }
-//    //fprintf(stderr,"timer callback issuing requests!\n");
-//    if (op_queue_size >= (size_t) options.depth) {
-//      return;
-//    } else {
-//        double now = get_time();
-//        issue_getsetorset(now);
-//    }
-//}
 
 
 /* The follow are C trampolines for libevent callbacks. */
-void bev_event_cb(struct bufferevent *bev, short events, void *ptr) {
+void bev_event_cb1(struct bufferevent *bev, short events, void *ptr) {
 
-  Connection* conn = (Connection*) ptr;
-  conn->event_callback(events);
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  conn->event_callback1(events);
 }
 
-void bev_read_cb(struct bufferevent *bev, void *ptr) {
-  Connection* conn = (Connection*) ptr;
-  conn->read_callback();
+/* The follow are C trampolines for libevent callbacks. */
+void bev_event_cb2(struct bufferevent *bev, short events, void *ptr) {
+
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  conn->event_callback2(events);
 }
 
-void bev_write_cb(struct bufferevent *bev, void *ptr) {
-  Connection* conn = (Connection*) ptr;
-  conn->write_callback();
+void bev_read_cb1(struct bufferevent *bev, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  conn->read_callback1();
 }
 
-void timer_cb(evutil_socket_t fd, short what, void *ptr) {
-  Connection* conn = (Connection*) ptr;
+void bev_read_cb2(struct bufferevent *bev, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  conn->read_callback2();
+}
+
+void timer_cb_m(evutil_socket_t fd, short what, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->timer_callback();
 }
 

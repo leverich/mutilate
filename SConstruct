@@ -50,7 +50,7 @@ env.Append(CPPFLAGS = ' -O2 -Wall -g')
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 
 src = Split("""mutilate.cc cmdline.cc log.cc distributions.cc util.cc
-               Connection.cc Protocol.cc Generator.cc""")
+               Connection.cc ConnectionMulti.cc Protocol.cc Generator.cc""")
 
 if not env['HAVE_POSIX_BARRIER']: # USE_POSIX_BARRIER:
     src += ['barrier.cc']

@@ -994,7 +994,7 @@ void* reader_thread(void *arg) {
                                 continue;
                             }
                         } 
-                        if (appid < trace_queue.size()) {
+                        if (appid < (int)trace_queue.size()) {
                             pthread_mutex_lock(mutexes[appid]);
                             trace_queue[appid]->push(full_line);
                             pthread_mutex_unlock(mutexes[appid]);
@@ -1034,7 +1034,7 @@ void* reader_thread(void *arg) {
 
   	    string eof = "EOF";
   	    for (int i = 0; i < 1000; i++) {
-                for (int j = 0; j < trace_queue.size(); j++) {
+                for (int j = 0; j < (int)trace_queue.size(); j++) {
   	            //trace_queue[j]->enqueue(eof);
   	            trace_queue[j]->push(eof);
                 }
