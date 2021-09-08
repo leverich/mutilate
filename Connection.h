@@ -285,6 +285,8 @@ private:
   // request functions
   void issue_sasl();
   void issue_noop(double now = 0.0, int level = 1);
+  int issue_touch(const char* key, int valuelen, double now = 0.0, int level = 1);
+  int issue_delete(const char* key, double now = 0.0, int level = 1);
   int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false, int level = 1);
   int issue_set(const char* key, const char* value, int length,
                  double now = 0.0, bool real_set = false, int level = 1);

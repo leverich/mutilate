@@ -517,6 +517,7 @@ int main(int argc, char **argv) {
         servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
     }
   }
+  
 
   ConnectionStats stats;
 
@@ -1087,8 +1088,6 @@ void* thread_main(void *arg) {
 
 void do_mutilate(const vector<string>& servers, options_t& options,
                  ConnectionStats& stats, vector<queue<string>*> trace_queue, vector<pthread_mutex_t*> mutexes, bool master 
-//void do_mutilate(const vector<string>& servers, options_t& options,
-//                 ConnectionStats& stats, vector<ConcurrentQueue<string>*> trace_queue, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -1106,7 +1105,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
 #ifdef HAVE_DECL_EVENT_BASE_FLAG_PRECISE_TIMER
   if (event_config_set_flag(config, EVENT_BASE_FLAG_PRECISE_TIMER))
-    DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
+        DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
 #endif
 
   if ((base = event_base_new_with_config(config)) == NULL)
@@ -1122,83 +1121,64 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   double start = get_time();
   double now = start;
 
-  vector<Connection*> connections;
-  vector<Connection*> server_lead;
 
-  for (auto s: servers) {
-    // Split args.server_arg[s] into host:port using strtok().
-    char *s_copy = new char[s.length() + 1];
-    strcpy(s_copy, s.c_str());
+  if (servers.size() == 1) {
+    vector<Connection*> connections;
+    vector<Connection*> server_lead;
+    for (auto s: servers) {
+      // Split args.server_arg[s] into host:port using strtok().
+      char *s_copy = new char[s.length() + 1];
+      strcpy(s_copy, s.c_str());
 
-    char *h_ptr = strtok_r(s_copy, ":", &saveptr);
-    char *p_ptr = strtok_r(NULL, ":", &saveptr);
+      char *h_ptr = strtok_r(s_copy, ":", &saveptr);
+      char *p_ptr = strtok_r(NULL, ":", &saveptr);
 
-    if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
+      if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
 
-    string hostname = h_ptr;
-    string port = "11211";
-    if (p_ptr) port = p_ptr;
+      string hostname = h_ptr;
+      string port = "11211";
+      if (p_ptr) port = p_ptr;
 
-    delete[] s_copy;
+      delete[] s_copy;
 
-    int conns = args.measure_connections_given ? args.measure_connections_arg :
-      options.connections;
+      int conns = args.measure_connections_given ? args.measure_connections_arg :
+        options.connections;
 
-    srand(time(NULL));
-    for (int c = 0; c < conns; c++) {
-      Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                        //NULL,//trace_queue,
-                                        args.agentmode_given ? false :
-                                        true);
-      int tries = 120;
-      int connected = 0;
-      int s = 2;
-      for (int i = 0; i < tries; i++) {
-        pthread_mutex_lock(&flock);
-        int ret = conn->do_connect();
-        pthread_mutex_unlock(&flock);
-        if (ret) {
-            connected = 1;
-            fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c+1);
-            break;
+      srand(time(NULL));
+      for (int c = 0; c < conns; c++) {
+        Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                          //NULL,//trace_queue,
+                                          args.agentmode_given ? false :
+                                          true);
+        int tries = 120;
+        int connected = 0;
+        int s = 2;
+        for (int i = 0; i < tries; i++) {
+          pthread_mutex_lock(&flock);
+          int ret = conn->do_connect();
+          pthread_mutex_unlock(&flock);
+          if (ret) {
+              connected = 1;
+              fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c+1);
+              break;
+          }
+          int d = s + rand() % 100;
+          //s = s + d;
+          
+          //fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
+          sleep(d);
+        } 
+        if (connected) {
+          conn->set_queue(trace_queue[conn->get_cid()]);
+          conn->set_lock(mutexes[conn->get_cid()]);
+          connections.push_back(conn);
+        } else {
+          fprintf(stderr,"conn: %d, not connected!!\n",c);
+
         }
-        int d = s + rand() % 100;
-        //s = s + d;
-        
-        //fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
-        sleep(d);
-      } 
-      if (connected) {
-        conn->set_queue(trace_queue[conn->get_cid()]);
-        conn->set_lock(mutexes[conn->get_cid()]);
-        connections.push_back(conn);
-      } else {
-        fprintf(stderr,"conn: %d, not connected!!\n",c);
-
+        if (c == 0) server_lead.push_back(conn);
       }
-      if (c == 0) server_lead.push_back(conn);
     }
-  }
-
-  // Wait for all Connections to become IDLE.
-  while (1) {
-    // FIXME: If all connections become ready before event_base_loop
-    // is called, this will deadlock.
-    event_base_loop(base, EVLOOP_ONCE);
-
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->is_ready()) restart = true;
-
-    if (restart) continue;
-    else break;
-  }
-
-  // Load database on lead connection for each server.
-  if (!options.noload) {
-    V("Loading database.");
-
-    for (auto c: server_lead) c->start_loading();
 
     // Wait for all Connections to become IDLE.
     while (1) {
@@ -1213,29 +1193,134 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       if (restart) continue;
       else break;
     }
-  }
 
-  if (options.loadonly) {
-    evdns_base_free(evdns, 0);
-    event_base_free(base);
-    return;
-  }
+    // Load database on lead connection for each server.
+    if (!options.noload) {
+      V("Loading database.");
 
-  // FIXME: Remove.  Not needed, testing only.
-  //  // FIXME: Synchronize start_time here across threads/nodes.
-  //  pthread_barrier_wait(&barrier);
+      for (auto c: server_lead) c->start_loading();
 
-  // Warmup connection.
-  if (options.warmup > 0) {
-    if (master) V("Warmup start.");
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If all connections become ready before event_base_loop
+        // is called, this will deadlock.
+        event_base_loop(base, EVLOOP_ONCE);
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->is_ready()) restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+    }
+
+    if (options.loadonly) {
+      evdns_base_free(evdns, 0);
+      event_base_free(base);
+      return;
+    }
+
+    // FIXME: Remove.  Not needed, testing only.
+    //  // FIXME: Synchronize start_time here across threads/nodes.
+    //  pthread_barrier_wait(&barrier);
+
+    // Warmup connection.
+    if (options.warmup > 0) {
+        if (master) V("Warmup start.");
+
+#ifdef HAVE_LIBZMQ
+        if (args.agent_given || args.agentmode_given) {
+          if (master) V("Synchronizing.");
+
+          // 1. thread barrier: make sure our threads ready before syncing agents
+          // 2. sync agents: all threads across all agents are now ready
+          // 3. thread barrier: don't release our threads until all agents ready
+          pthread_barrier_wait(&barrier);
+          if (master) sync_agent(socket);
+          pthread_barrier_wait(&barrier);
+
+          if (master) V("Synchronized.");
+        }
+#endif
+
+      int old_time = options.time;
+      //    options.time = 1;
+
+      start = get_time();
+      for (Connection *conn: connections) {
+        conn->start_time = start;
+        conn->options.time = options.warmup;
+        conn->start(); // Kick the Connection into motion.
+      }
+
+      while (1) {
+        event_base_loop(base, loop_flag);
+
+        //#ifdef USE_CLOCK_GETTIME
+        //      now = get_time();
+        //#else
+        struct timeval now_tv;
+        event_base_gettimeofday_cached(base, &now_tv);
+        now = tv_to_double(&now_tv);
+        //#endif
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->check_exit_condition(now))
+            restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) {
+
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If there were to use EVLOOP_ONCE and all connections
+        // become ready before event_base_loop is called, this will
+        // deadlock.  We should check for IDLE before calling
+        // event_base_loop.
+        event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->is_ready()) restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+      }
+
+      for (Connection *conn: connections) {
+        conn->reset();
+        conn->options.time = old_time;
+      }
+
+      if (master) V("Warmup stop.");
+    }
+
+
+    // FIXME: Synchronize start_time here across threads/nodes.
+    pthread_barrier_wait(&barrier);
+
+    if (master && args.wait_given) {
+      if (get_time() < boot_time + args.wait_arg) {
+        double t = (boot_time + args.wait_arg)-get_time();
+        V("Sleeping %.1fs for -W.", t);
+        sleep_time(t);
+      }
+    }
 
 #ifdef HAVE_LIBZMQ
     if (args.agent_given || args.agentmode_given) {
       if (master) V("Synchronizing.");
 
-      // 1. thread barrier: make sure our threads ready before syncing agents
-      // 2. sync agents: all threads across all agents are now ready
-      // 3. thread barrier: don't release our threads until all agents ready
       pthread_barrier_wait(&barrier);
       if (master) sync_agent(socket);
       pthread_barrier_wait(&barrier);
@@ -1244,21 +1329,23 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     }
 #endif
 
-    int old_time = options.time;
-    //    options.time = 1;
+    if (master && !args.scan_given && !args.search_given)
+      V("started at %f", get_time());
 
     start = get_time();
     for (Connection *conn: connections) {
       conn->start_time = start;
-      conn->options.time = options.warmup;
       conn->start(); // Kick the Connection into motion.
     }
 
+    //  V("Start = %f", start);
+
+    // Main event loop.
     while (1) {
       event_base_loop(base, loop_flag);
 
-      //#ifdef USE_CLOCK_GETTIME
-      //      now = get_time();
+      //#if USE_CLOCK_GETTIME
+      //    now = get_time();
       //#else
       struct timeval now_tv;
       event_base_gettimeofday_cached(base, &now_tv);
@@ -1274,108 +1361,241 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       else break;
     }
 
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->is_ready()) restart = true;
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
 
-    if (restart) {
+    // Tear-down and accumulate stats.
+    for (Connection *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  } else if (servers.size() == 2) {
+    vector<ConnectionMulti*> connections;
+    vector<ConnectionMulti*> server_lead;
+    struct event_base *base2;
+
+    if ((base2 = event_base_new_with_config(config)) == NULL)
+      DIE("event_base_new() fail");
+
+    string hostname1 = servers[0];
+    string hostname2 = servers[1];
+    string port = "11211";
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+      ConnectionMulti* conn = new ConnectionMulti(base, base2, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true);
+      int tries = 120;
+      int connected = 0;
+      int s = 2;
+      for (int i = 0; i < tries; i++) {
+        pthread_mutex_lock(&flock);
+        int ret = conn->do_connect();
+        pthread_mutex_unlock(&flock);
+        if (ret) {
+            connected = 1;
+            fprintf(stderr,"thread %lu, multi conn: %d, connected!\n",pthread_self(),c+1);
+            break;
+        }
+        int d = s + rand() % 100;
+        sleep(d);
+      } 
+      if (connected) {
+        conn->set_queue(trace_queue[conn->get_cid()]);
+        conn->set_lock(mutexes[conn->get_cid()]);
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+      if (c == 0) server_lead.push_back(conn);
+    }
 
     // Wait for all Connections to become IDLE.
     while (1) {
-      // FIXME: If there were to use EVLOOP_ONCE and all connections
-      // become ready before event_base_loop is called, this will
-      // deadlock.  We should check for IDLE before calling
-      // event_base_loop.
-      event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
 
       bool restart = false;
-      for (Connection *conn: connections)
+      for (ConnectionMulti *conn: connections)
         if (!conn->is_ready()) restart = true;
 
       if (restart) continue;
       else break;
     }
-    }
-
-    for (Connection *conn: connections) {
-      conn->reset();
-      conn->options.time = old_time;
-    }
-
-    if (master) V("Warmup stop.");
-  }
 
 
-  // FIXME: Synchronize start_time here across threads/nodes.
-  pthread_barrier_wait(&barrier);
+    // FIXME: Remove.  Not needed, testing only.
+    //  // FIXME: Synchronize start_time here across threads/nodes.
+    //  pthread_barrier_wait(&barrier);
 
-  if (master && args.wait_given) {
-    if (get_time() < boot_time + args.wait_arg) {
-      double t = (boot_time + args.wait_arg)-get_time();
-      V("Sleeping %.1fs for -W.", t);
-      sleep_time(t);
-    }
-  }
+    // Warmup connection.
+    if (options.warmup > 0) {
+        if (master) V("Warmup start.");
 
 #ifdef HAVE_LIBZMQ
-  if (args.agent_given || args.agentmode_given) {
-    if (master) V("Synchronizing.");
+        if (args.agent_given || args.agentmode_given) {
+          if (master) V("Synchronizing.");
 
-    pthread_barrier_wait(&barrier);
-    if (master) sync_agent(socket);
-    pthread_barrier_wait(&barrier);
+          // 1. thread barrier: make sure our threads ready before syncing agents
+          // 2. sync agents: all threads across all agents are now ready
+          // 3. thread barrier: don't release our threads until all agents ready
+          pthread_barrier_wait(&barrier);
+          if (master) sync_agent(socket);
+          pthread_barrier_wait(&barrier);
 
-    if (master) V("Synchronized.");
-  }
+          if (master) V("Synchronized.");
+        }
 #endif
 
-  if (master && !args.scan_given && !args.search_given)
-    V("started at %f", get_time());
+      int old_time = options.time;
+      //    options.time = 1;
 
-  start = get_time();
-  for (Connection *conn: connections) {
-    conn->start_time = start;
-    conn->start(); // Kick the Connection into motion.
+      start = get_time();
+      for (ConnectionMulti *conn: connections) {
+        conn->start_time = start;
+        conn->options.time = options.warmup;
+        conn->start(); // Kick the Connection into motion.
+      }
+
+      while (1) {
+        event_base_loop(base, loop_flag);
+        event_base_loop(base2, loop_flag);
+
+        //#ifdef USE_CLOCK_GETTIME
+        //      now = get_time();
+        //#else
+        struct timeval now_tv;
+        event_base_gettimeofday_cached(base, &now_tv);
+        now = tv_to_double(&now_tv);
+        //#endif
+
+        bool restart = false;
+        for (ConnectionMulti *conn: connections)
+          if (!conn->check_exit_condition(now))
+            restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+
+      bool restart = false;
+      for (ConnectionMulti *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) {
+
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If there were to use EVLOOP_ONCE and all connections
+        // become ready before event_base_loop is called, this will
+        // deadlock.  We should check for IDLE before calling
+        // event_base_loop.
+        event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+        event_base_loop(base2, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+
+        bool restart = false;
+        for (ConnectionMulti *conn: connections)
+          if (!conn->is_ready()) restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+      }
+
+      for (ConnectionMulti *conn: connections) {
+        conn->reset();
+        conn->options.time = old_time;
+      }
+
+      if (master) V("Warmup stop.");
+    }
+
+
+    // FIXME: Synchronize start_time here across threads/nodes.
+    pthread_barrier_wait(&barrier);
+
+    if (master && args.wait_given) {
+      if (get_time() < boot_time + args.wait_arg) {
+        double t = (boot_time + args.wait_arg)-get_time();
+        V("Sleeping %.1fs for -W.", t);
+        sleep_time(t);
+      }
+    }
+
+#ifdef HAVE_LIBZMQ
+    if (args.agent_given || args.agentmode_given) {
+      if (master) V("Synchronizing.");
+
+      pthread_barrier_wait(&barrier);
+      if (master) sync_agent(socket);
+      pthread_barrier_wait(&barrier);
+
+      if (master) V("Synchronized.");
+    }
+#endif
+
+    if (master && !args.scan_given && !args.search_given)
+      V("started at %f", get_time());
+
+    start = get_time();
+    for (ConnectionMulti *conn: connections) {
+      conn->start_time = start;
+      conn->start(); // Kick the Connection into motion.
+    }
+
+    //  V("Start = %f", start);
+
+    // Main event loop.
+    while (1) {
+      event_base_loop(base, loop_flag);
+      event_base_loop(base2, loop_flag);
+
+      //#if USE_CLOCK_GETTIME
+      //    now = get_time();
+      //#else
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+      //#endif
+
+      bool restart = false;
+      for (ConnectionMulti *conn: connections)
+        if (!conn->check_exit_condition(now))
+          restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMulti *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+    event_base_free(base2);
   }
-
-  //  V("Start = %f", start);
-
-  // Main event loop.
-  while (1) {
-    event_base_loop(base, loop_flag);
-
-    //#if USE_CLOCK_GETTIME
-    //    now = get_time();
-    //#else
-    struct timeval now_tv;
-    event_base_gettimeofday_cached(base, &now_tv);
-    now = tv_to_double(&now_tv);
-    //#endif
-
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->check_exit_condition(now))
-        restart = true;
-
-    if (restart) continue;
-    else break;
-  }
-
-  if (master && !args.scan_given && !args.search_given)
-    V("stopped at %f  options.time = %d", get_time(), options.time);
-
-  // Tear-down and accumulate stats.
-  for (Connection *conn: connections) {
-    stats.accumulate(conn->stats);
-    delete conn;
-  }
-
-  stats.start = start;
-  stats.stop = now;
-
-  event_config_free(config);
-  evdns_base_free(evdns, 0);
-  event_base_free(base);
 }
 
 void args_to_options(options_t* options) {

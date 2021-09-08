@@ -3,6 +3,8 @@
 
 #define CMD_GET  0x00
 #define CMD_GETQ 0x09
+#define CMD_TOUCH 0x1c
+#define CMD_DELETE 0x04
 #define CMD_SET  0x01
 #define CMD_NOOP 0x0a
 #define CMD_SETQ 0x11

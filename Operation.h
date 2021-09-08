@@ -16,10 +16,12 @@ public:
 
   type_enum type;
 
-  string key;
   int valuelen;
   uint32_t opaque;
   uint8_t level;
+  uint8_t incl;
+  uint16_t clsid;
+  string key;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };
