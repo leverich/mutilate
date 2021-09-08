@@ -49,7 +49,12 @@ using namespace moodycamel;
 
 pthread_mutex_t cid_lock_m = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t connids_m = 1;
-    
+
+#define NCLASSES 40
+static int classes = 0;
+static int sizes[NCLASSES+1];
+static int inclusives[NCLASSES+1];
+
 typedef struct _evicted_type {
     bool evicted;
     uint32_t evictedFlags;
@@ -59,10 +64,54 @@ typedef struct _evicted_type {
     char *evictedData;
 } evicted_t;
 
-static int get_incl(int vl) {
+static int get_incl(int vl, int kl) {
+    int clsid = get_class(vl,kl);
+    return inclusives[clsid];
+}
+
+static int init_inclusives(string inclusive_str) {
+    int j = 1;
+    for (int i = 0; i < inclusive_str.length(); i++) {
+        if (inclusive_str[i] == '-') {
+            continue;
+        } else {
+            inclusives[j] = inclusive_str[i] - '0';
+            j++;
+        }
+    }
+}
+
+static int init_classes() {
+
+    double factor = 1.25;
+    unsigned int chunk_size = 48;
+    unsigned int item_size = 24;
+    unsigned int size = item_size + chunk_size;
+    unsigned int i = 0;
+    unsigned int chunk_size_max = 1048576/2;
+    while (++i < DEFAULT_NCLASSES-1) {
+        if (size >= chunk_size_max / factor) {
+            break;
+        }
+        if (size % CHUNK_ALIGN_BYTES)
+            size += CHUNK_ALIGN_BYTES - (size % CHUNK_ALIGN_BYTES);
+        sizes[i] = size;
+        size *= factor;
+    }
+    sizes[i] = chunk_size_max;
+    classes = i;
+
 }
 
 static int get_class(int vl, uint32_t kl) {
+    int vsize = vl+kl+24+1+2;
+    int res = 1;
+    while (vsize > sizes[res])
+        if (res++ == classes) { 
+            fprintf(stderr,"item larger than max class size. vsize: %d, class size: %d\n",vsize,sizes[res]);
+            return -1;
+        }
+    return res;
 }
 
 void ConnectionMulti::output_op(Operation *op, int type, bool found) {
