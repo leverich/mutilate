@@ -133,7 +133,9 @@ private:
   Generator *keysize;
   KeyGenerator *keygen;
   Generator *iagen;
+  //std::vector<std::vector<Operation>> op_queue;
   std::unordered_map<uint32_t,Operation> op_queue;
+
   uint32_t op_queue_size;
   pthread_mutex_t* lock;
   //ConcurrentQueue<string> *trace_queue;
@@ -176,7 +178,7 @@ private:
 
 class ConnectionMulti {
 public:
-  ConnectionMulti(struct event_base* _base1, struct event_base* _base2, struct evdns_base* _evdns,
+  ConnectionMulti(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname1, string _hostname2, string _port, options_t options,
              bool sampling = true);
 
@@ -215,8 +217,7 @@ private:
   string hostname2;
   string port;
 
-  struct event_base *base1;
-  struct event_base *base2;
+  struct event_base *base;
   struct evdns_base *evdns;
   struct bufferevent *bev1;
   struct bufferevent *bev2;
@@ -262,7 +263,8 @@ private:
   uint32_t cid;
   int eof;
   
-  std::vector<std::unordered_map<uint32_t,Operation>> op_queue;
+  //std::vector<std::queue<Operation>> op_queue;
+  Operation ***op_queue;
   uint32_t *op_queue_size;
 
 
@@ -287,9 +289,9 @@ private:
   void issue_noop(double now = 0.0, int level = 1);
   int issue_touch(const char* key, int valuelen, double now = 0.0, int level = 1);
   int issue_delete(const char* key, double now = 0.0, int level = 1);
-  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false, int level = 1);
+  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false, int level = 1, int flags = 0, uint32_t l1opaque = 0, uint8_t log = 1);
   int issue_set(const char* key, const char* value, int length,
-                 double now = 0.0, bool real_set = false, int level = 1);
+                 double now = 0.0, int level = 1, int flags = 0, uint32_t l1opaque = 0, uint8_t log = 1);
 
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);

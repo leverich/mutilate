@@ -39,7 +39,7 @@ extern int item_lock_hashpower;
 
 
 pthread_mutex_t cid_lock = PTHREAD_MUTEX_INITIALIZER;
-uint32_t connids = 1;
+uint32_t connids = 0;
 
 //pthread_mutex_t opaque_lock = PTHREAD_MUTEX_INITIALIZER;
 //uint32_t g_opaque = 0;

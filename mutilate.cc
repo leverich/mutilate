@@ -51,6 +51,7 @@
 using namespace std;
 using namespace moodycamel;
 
+int max_n[3] = {0,0,0};
 ifstream kvfile;
 pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -62,7 +63,7 @@ pthread_mutex_t *item_locks;
 int item_lock_hashpower = 13;
 
 gengetopt_args_info args;
-char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
+char random_char[4 * 1024 * 1024];  // Buffer used to generate random values.
 
 #ifdef HAVE_LIBZMQ
 vector<zmq::socket_t*> agent_sockets;
@@ -78,15 +79,15 @@ struct thread_data {
 #endif
   int id;
   //std::vector<ConcurrentQueue<string>*> trace_queue;
-  std::vector<queue<string>*> trace_queue;
-  std::vector<pthread_mutex_t*> mutexes;
+  std::vector<queue<string>*> *trace_queue;
+  std::vector<pthread_mutex_t*> *mutexes;
 };
 
 struct reader_data {
   //std::vector<ConcurrentQueue<string>*> trace_queue;
-  std::vector<queue<string>*> trace_queue;
-  std::vector<pthread_mutex_t*> mutexes;
-  string trace_filename;
+  std::vector<queue<string>*> *trace_queue;
+  std::vector<pthread_mutex_t*> *mutexes;
+  string *trace_filename;
   int twitter_trace;
 };
 
@@ -110,7 +111,7 @@ void go(const vector<string> &servers, options_t &options,
 //void do_mutilate(const vector<string> &servers, options_t &options,
 //                 ConnectionStats &stats,std::vector<ConcurrentQueue<string>*> trace_queue,  bool master = true
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats,std::vector<queue<string>*> trace_queue, std::vector<pthread_mutex_t*> mutexes,  bool master = true
+                 ConnectionStats &stats,std::vector<queue<string>*> *trace_queue, std::vector<pthread_mutex_t*> *mutexes,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket = NULL
 #endif
@@ -633,7 +634,7 @@ int main(int argc, char **argv) {
     stats.print_stats("update", stats.set_sampler);
     stats.print_stats("op_q",   stats.op_sampler);
 
-    int total = stats.gets + stats.sets;
+    int total = stats.gets_l1 + stats.gets_l2 + stats.sets_l1 + stats.sets_l2;
 
     printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
            total / (stats.stop - stats.start),
@@ -645,7 +646,20 @@ int main(int argc, char **argv) {
     printf("\n");
 
     printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
-           (double) stats.get_misses/stats.gets*100);
+           (double) stats.get_misses/(stats.gets+stats.sets)*100);
+    if (servers.size() == 2) {
+        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1,
+               (double) stats.get_misses_l1/(stats.gets + stats.sets)*100);
+        printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2,
+               (double) stats.get_misses_l2/(stats.gets + stats.sets)*100);
+        printf("L2 Writes = %" PRIu64 " (%.1f%%)\n", stats.sets_l2,
+               (double) stats.sets_l2/(stats.gets+stats.sets)*100);
+        
+        printf("Incl WBs  = %" PRIu64 " (%.1f%%)\n", stats.incl_wbs,
+               (double) stats.incl_wbs/(stats.gets+stats.sets)*100);
+        printf("Excl WBs  = %" PRIu64 " (%.1f%%)\n", stats.excl_wbs,
+               (double) stats.excl_wbs/(stats.gets+stats.sets)*100);
+    }
 
     printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
            (double) stats.skips / total * 100);
@@ -698,14 +712,15 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 
   //std::vector<ConcurrentQueue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
-  std::vector<queue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
-  std::vector<pthread_mutex_t*> mutexes; 
+  std::vector<queue<string>*> *trace_queue = new std::vector<queue<string>*>(); 
+  // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
+  std::vector<pthread_mutex_t*> *mutexes = new std::vector<pthread_mutex_t*>(); 
   for (int i = 0; i <= options.apps; i++) {
       //trace_queue.push_back(new ConcurrentQueue<string>(2000000));
-      trace_queue.push_back(new std::queue<string>());
+      trace_queue->push_back(new std::queue<string>());
       pthread_mutex_t *lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
       *lock = PTHREAD_MUTEX_INITIALIZER;
-      mutexes.push_back(lock);
+      mutexes->push_back(lock);
   }
   pthread_mutex_init(&reader_l, NULL);
   pthread_cond_init(&reader_ready, NULL);
@@ -717,7 +732,7 @@ void go(const vector<string>& servers, options_t& options,
   rdata->twitter_trace = options.twitter_trace;
   pthread_t rtid;
   if (options.read_file) {
-      rdata->trace_filename = options.file_name; 
+      rdata->trace_filename = new string(options.file_name); 
       int error = 0;
       if ((error = pthread_create(&rtid, NULL,reader_thread,rdata)) != 0) {
         printf("reader thread failed to be created with error code %d\n", error);
@@ -807,8 +822,12 @@ void go(const vector<string>& servers, options_t& options,
       ConnectionStats *cs;
       if (pthread_join(pt[t], (void**) &cs)) DIE("pthread_join() failed");
       stats.accumulate(*cs);
+      
       delete cs;
     }
+  for (int i = 1; i <= 2; i++) {
+      fprintf(stderr,"max issue buf n[%d]: %u\n",i,max_n[i]);
+  }
     //delete trace_queue;
 
   } else if (options.threads == 1) {
@@ -933,12 +952,13 @@ static char *get_stream(ZSTD_DCtx* dctx, FILE *fin, size_t const buffInSize, voi
 void* reader_thread(void *arg) {
   struct reader_data *rdata = (struct reader_data *) arg;
   //std::vector<ConcurrentQueue<string>*> trace_queue = (std::vector<ConcurrentQueue<string>*>) rdata->trace_queue;
-  std::vector<queue<string>*> trace_queue = (std::vector<queue<string>*>) rdata->trace_queue;
-  std::vector<pthread_mutex_t*> mutexes = (std::vector<pthread_mutex_t*>) rdata->mutexes;
+  std::vector<queue<string>*> *trace_queue = (std::vector<queue<string>*>*) rdata->trace_queue;
+  std::vector<pthread_mutex_t*> *mutexes = (std::vector<pthread_mutex_t*>*) rdata->mutexes;
   int twitter_trace = rdata->twitter_trace;
-  if (hasEnding(rdata->trace_filename,".zst")) {
+  string fn = *(rdata->trace_filename);
+  if (hasEnding(fn,".zst")) {
         //init
-        const char *filename = rdata->trace_filename.c_str();
+        const char *filename = fn.c_str();
         FILE* const fin  = fopen_orDie(filename, "rb");
         size_t const buffInSize = ZSTD_DStreamInSize()*1000;
         void*  const buffIn  = malloc_orDie(buffInSize);
@@ -964,7 +984,7 @@ void* reader_thread(void *arg) {
                 int appid = 0;
                 if (full_line.length() > 10) {
                     
-                    if (trace_queue.size() > 1) {
+                    if (trace_queue->size() > 1) {
                         stringstream ss(full_line);
                         string rT;
                         string rApp;
@@ -979,7 +999,7 @@ void* reader_thread(void *arg) {
                                 getline( ss, rKeySize, ',' );
                                 getline( ss, rvaluelen, ',' );
                                 getline( ss, rApp, ',' );
-                                appid = stoi(rApp) % trace_queue.size();
+                                appid = (stoi(rApp)) % trace_queue->size();
                             } else {
                                 continue;
                             }
@@ -990,20 +1010,20 @@ void* reader_thread(void *arg) {
                             if (n == 4) {
                                 getline( ss, rT, ',');
                                 getline( ss, rApp, ',');
-                                appid = stoi(rApp);
+                                appid = (stoi(rApp)) % trace_queue->size();
                             } else {
                                 continue;
                             }
                         } 
-                        if (appid < (int)trace_queue.size()) {
-                            pthread_mutex_lock(mutexes[appid]);
-                            trace_queue[appid]->push(full_line);
-                            pthread_mutex_unlock(mutexes[appid]);
+                        if (appid < (int)trace_queue->size()) {
+                            //pthread_mutex_lock(mutexes[appid]);
+                            trace_queue->at(appid)->push(full_line);
+                            //pthread_mutex_unlock(mutexes[appid]);
                         }
                     } else {
-                        pthread_mutex_lock(mutexes[appid]);
-                        trace_queue[appid]->push(full_line);
-                        pthread_mutex_unlock(mutexes[appid]);
+                        //pthread_mutex_lock(mutexes[appid]);
+                        trace_queue->at(appid)->push(full_line);
+                        //pthread_mutex_unlock(mutexes[appid]);
                     }
                 }
                 //bool res = trace_queue[appid]->try_enqueue(full_line);
@@ -1026,20 +1046,21 @@ void* reader_thread(void *arg) {
             free(ftrace);
             trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
         }
+
+  	string eof = "EOF";
+  	for (int i = 0; i < 1000; i++) {
+            for (int j = 0; j < (int)trace_queue->size(); j++) {
+  	        //trace_queue[j]->enqueue(eof);
+  	        trace_queue->at(j)->push(eof);
+            }
+  	}
+
         pthread_mutex_lock(&reader_l);
         if (reader_not_ready) {
             reader_not_ready = 0;
         }
         pthread_mutex_unlock(&reader_l);
         pthread_cond_signal(&reader_ready);
-
-  	    string eof = "EOF";
-  	    for (int i = 0; i < 1000; i++) {
-                for (int j = 0; j < (int)trace_queue.size(); j++) {
-  	            //trace_queue[j]->enqueue(eof);
-  	            trace_queue[j]->push(eof);
-                }
-  	    }
         if (trace) {
             free(trace);
         }
@@ -1087,7 +1108,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, vector<queue<string>*> trace_queue, vector<pthread_mutex_t*> mutexes, bool master 
+                 ConnectionStats& stats, vector<queue<string>*> *trace_queue, vector<pthread_mutex_t*> *mutexes, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socket
 #endif
@@ -1145,7 +1166,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         options.connections;
 
       srand(time(NULL));
-      for (int c = 0; c < conns; c++) {
+      for (int c = 0; c <= conns; c++) {
         Connection* conn = new Connection(base, evdns, hostname, port, options,
                                           //NULL,//trace_queue,
                                           args.agentmode_given ? false :
@@ -1169,8 +1190,9 @@ void do_mutilate(const vector<string>& servers, options_t& options,
           sleep(d);
         } 
         if (connected) {
-          conn->set_queue(trace_queue[conn->get_cid()]);
-          conn->set_lock(mutexes[conn->get_cid()]);
+          fprintf(stderr,"cid %d gets trace_queue\nfirst: %s",conn->get_cid(),trace_queue->at(conn->get_cid())->front().c_str());
+          conn->set_queue(trace_queue->at(conn->get_cid()));
+          conn->set_lock(mutexes->at(conn->get_cid()));
           connections.push_back(conn);
         } else {
           fprintf(stderr,"conn: %d, not connected!!\n",c);
@@ -1379,10 +1401,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   } else if (servers.size() == 2) {
     vector<ConnectionMulti*> connections;
     vector<ConnectionMulti*> server_lead;
-    struct event_base *base2;
-
-    if ((base2 = event_base_new_with_config(config)) == NULL)
-      DIE("event_base_new() fail");
 
     string hostname1 = servers[0];
     string hostname2 = servers[1];
@@ -1393,7 +1411,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     srand(time(NULL));
     for (int c = 0; c < conns; c++) {
-      ConnectionMulti* conn = new ConnectionMulti(base, base2, evdns, 
+      ConnectionMulti* conn = new ConnectionMulti(base, evdns, 
               hostname1, hostname2, port, options,args.agentmode_given ? false : true);
       int tries = 120;
       int connected = 0;
@@ -1410,9 +1428,11 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         int d = s + rand() % 100;
         sleep(d);
       } 
+      int cid = conn->get_cid();
       if (connected) {
-        conn->set_queue(trace_queue[conn->get_cid()]);
-        conn->set_lock(mutexes[conn->get_cid()]);
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front().c_str());
+        conn->set_queue(trace_queue->at(cid));
+        conn->set_lock(mutexes->at(cid));
         connections.push_back(conn);
       } else {
         fprintf(stderr,"conn multi: %d, not connected!!\n",c);
@@ -1471,7 +1491,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
       while (1) {
         event_base_loop(base, loop_flag);
-        event_base_loop(base2, loop_flag);
 
         //#ifdef USE_CLOCK_GETTIME
         //      now = get_time();
@@ -1503,7 +1522,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         // deadlock.  We should check for IDLE before calling
         // event_base_loop.
         event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
-        event_base_loop(base2, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
 
         bool restart = false;
         for (ConnectionMulti *conn: connections)
@@ -1556,11 +1574,11 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     }
 
     //  V("Start = %f", start);
+    fprintf(stderr,"Start = %f", start);
 
     // Main event loop.
     while (1) {
       event_base_loop(base, loop_flag);
-      event_base_loop(base2, loop_flag);
 
       //#if USE_CLOCK_GETTIME
       //    now = get_time();
@@ -1594,7 +1612,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-    event_base_free(base2);
   }
 }
 
@@ -1607,6 +1624,10 @@ void args_to_options(options_t* options) {
   options->server_given = args.server_given;
   options->roundrobin = args.roundrobin_given;
   options->apps = args.apps_arg;
+  if (args.inclusives_given) {
+    memset(options->inclusives,0,256);
+    strncpy(options->inclusives,args.inclusives_arg,256);
+  }
 
   int connections = options->connections;
   if (options->roundrobin) {

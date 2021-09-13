@@ -13,6 +13,7 @@ text "\nBasic options:"
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
 option "unix_socket" - "Use UNIX socket instead of TCP."
+option "inclusives" - "give a list of 1 == inclusive, 2 == exclusives for each class" string default=""
 option "binary" - "Use binary memcached protocol instead of ASCII."
 option "redis"  - "Use Redis RESP protocol instead of memchached."
 option "getset" - "Use getset mode, in getset mode we first issue \

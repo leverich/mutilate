@@ -57,6 +57,8 @@ typedef struct {
   bool oob_thread;
 
   bool moderate;
+  char inclusives[256];
+
 } options_t;
 
 #endif // CONNECTIONOPTIONS_H
