@@ -29,10 +29,10 @@ if env.Execute("@which gengetopt &> /dev/null"):
     print "not found (required)"
     Exit(1)
 else: print "found"
-if not conf.CheckLibWithHeader("event", "event2/event.h", "C++"):
-    print "libevent required"
-    Exit(1)
-conf.CheckDeclaration("EVENT_BASE_FLAG_PRECISE_TIMER", '#include <event2/event.h>', "C++")
+#if not conf.CheckLibWithHeader("event", "event2/event.h", "C++"):
+#    print "libevent required"
+#    Exit(1)
+#conf.CheckDeclaration("EVENT_BASE_FLAG_PRECISE_TIMER", '#include <event2/event.h>', "C++")
 if not conf.CheckLibWithHeader("pthread", "pthread.h", "C++"):
     print "pthread required"
     Exit(1)
@@ -44,13 +44,13 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O0 -Wall -g')
-env.Append(CPPFLAGS = ' -O0 -Wall -g')
-#env.Append(CFLAGS = ' -O2 -Wall')
-#env.Append(CPPFLAGS = ' -O2 -Wall')
+#env.Append(CFLAGS = ' -O0 -Wall -g')
+#env.Append(CPPFLAGS = ' -O0 -Wall -g')
+env.Append(CFLAGS = ' -O3 -Wall -g')
+env.Append(CPPFLAGS = ' -O3 -Wall -g')
 #env.Append(LDFLAGS = '-fsantize=address')
-#env.Append(CFLAGS = ' -O2 -Wall -g -fsantize=address')
-#env.Append(CPPFLAGS = ' -O2 -Wall -g -fsanitize=address')
+#env.Append(CFLAGS = ' -O3 -Wall -g -fsantize=address')
+#env.Append(CPPFLAGS = ' -O3 -Wall -g -fsanitize=address')
 #env.Append(CFLAGS = ' -O0 -Wall -g -fsantize=address')
 #env.Append(CPPFLAGS = ' -O0 -Wall -g -fsanitize=address')
 
@@ -65,7 +65,7 @@ src = Split("""mutilate.cc cmdline.cc log.cc distributions.cc util.cc
 if not env['HAVE_POSIX_BARRIER']: # USE_POSIX_BARRIER:
     src += ['barrier.cc']
 
-src += ['libzstd.a']
+src += ['libzstd.a', '/u/dbyrne99/local/lib/libevent.a']
 env.Program(target='mutilate', source=src)
 #env.Program(target='gtest', source=['TestGenerator.cc', 'log.cc', 'util.cc',
 #                                    'Generator.cc'])

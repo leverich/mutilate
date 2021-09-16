@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
   //  struct event_base *base;
 
   //  if ((base = event_base_new()) == NULL) DIE("event_base_new() fail");
-  //  evthread_use_pthreads();
+  //evthread_use_pthreads();
 
   //  if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
 
@@ -1121,6 +1121,8 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   struct event_base *base;
   struct evdns_base *evdns;
   struct event_config *config;
+  //event_enable_debug_mode();
+
 
   if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
 
@@ -1132,7 +1134,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   if ((base = event_base_new_with_config(config)) == NULL)
     DIE("event_base_new() fail");
 
-  //  evthread_use_pthreads();
+  //evthread_use_pthreads();
 
   if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
 
@@ -1425,7 +1427,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
             fprintf(stderr,"thread %lu, multi conn: %d, connected!\n",pthread_self(),c+1);
             break;
         }
-        int d = s + rand() % 100;
+        int d = s + rand() % 10;
         sleep(d);
       } 
       int cid = conn->get_cid();

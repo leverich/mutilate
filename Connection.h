@@ -27,7 +27,7 @@
 #define hashsize(n) ((unsigned long int)1<<(n))
 #define hashmask(n) (hashsize(n)-1)
 
-#define MAX_BUFFER_SIZE 8*1024*1024
+#define MAX_BUFFER_SIZE 10*1024*1024
 
 using namespace std;
 using namespace moodycamel;
