@@ -27,9 +27,19 @@
 #include <string.h>
 #include "blockingconcurrentqueue.h"
 
-#define ITEM_DIRTY 16384
+#define ITEM_L1 1
+#define ITEM_L2 2
+#define LOG_OP 4
+#define SRC_L1_M 8
+#define SRC_L1_H 16
+#define SRC_L2_M 32
+#define SRC_L2_H 64
+#define SRC_DIRECT_SET 128
+#define SRC_L1_COPY 256
+
 #define ITEM_INCL  4096
 #define ITEM_EXCL  8192
+#define ITEM_DIRTY 16384
 
 #define LEVELS 2
 #define SET_INCL(incl,flags)     \
@@ -46,6 +56,18 @@
 #define GET_INCL(incl,flags) \
     if (flags & ITEM_INCL) incl = 1; \
     else if (flags & ITEM_EXCL) incl = 2; \
+
+//#define OP_level(op) ( ((op)->flags & ITEM_L1) ? ITEM_L1 : ITEM_L2 )
+#define OP_level(op) ( (op)->flags ~& (LOG_OP | \
+                                     ITEM_INCL | ITEM_EXCL | ITEM_DIRTY \
+                                     SRC_L1_M | SRC_L1_H | SRC_L2_M | SRC_L2_H \
+                                     SRC_DIRECT_SET | SRC_L1_COPY ) )
+#define OP_src(op) ( (op)->flags ~& (ITEM_L1 | ITEM_L2 | LOG_OP | \
+                                     ITEM_INCL | ITEM_EXCL | ITEM_DIRTY ) )
+#define OP_log(op) ((op)->flags & LOG_OP)
+#define OP_incl(op) ((op)->flags & ITEM_INCL)
+#define OP_excl(op) ((op)->flags & ITEM_EXCL)
+#define OP_set_flag(op,flag) ((op))->flags |= flag;
 
 //#define DEBUGMC
 //#define DEBUGS
@@ -219,22 +241,12 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   op_queue = (Operation***)malloc(sizeof(Operation**)*(LEVELS+1));
-  issue_buf_n = (int*)malloc(sizeof(int)*(LEVELS+1));
-  issue_buf_size = (int*)malloc(sizeof(int)*(LEVELS+1));
-  issue_buf = (unsigned char**)malloc(sizeof(unsigned char*)*(LEVELS+1));
-  issue_buf_pos = (unsigned char**)malloc(sizeof(unsigned char*)*(LEVELS+1));
 
   for (int i = 0; i <= LEVELS; i++) {
       op_queue_size[i] = 0;
       opaque[i] = 1;
-
-      issue_buf[i] = (unsigned char*)malloc(sizeof(unsigned char)*MAX_BUFFER_SIZE);
-      memset(issue_buf[i],0,MAX_BUFFER_SIZE);
       //op_queue[i] = (Operation*)malloc(sizeof(int)*OPAQUE_MAX);
       op_queue[i] = (Operation**)malloc(sizeof(Operation*)*(OPAQUE_MAX*2));
-      issue_buf_pos[i] = issue_buf[i];
-      issue_buf_size[i] = 0;
-      issue_buf_n[i] = 0;
 
   }
   
@@ -311,7 +323,6 @@ ConnectionMulti::~ConnectionMulti() {
  
 
   for (int i = 0; i <= LEVELS; i++) {
-      free(issue_buf[i]);
       free(op_queue[i]);
 
   }
@@ -319,10 +330,6 @@ ConnectionMulti::~ConnectionMulti() {
   free(op_queue_size);
   free(opaque);
   free(op_queue);
-  free(issue_buf_n);
-  free(issue_buf_size);
-  free(issue_buf);
-  free(issue_buf_pos);
   event_free(timer);
   timer = NULL;
   // FIXME:  W("Drain op_q?");
@@ -493,107 +500,6 @@ int ConnectionMulti::issue_getsetorset(double now) {
         issue_noop(now,1);
         last_quiet1 = false;
     }
-#ifdef DEBUGMC
-    fprintf(stderr,"getsetorset issuing to l1 %d reqs last quiet %d\n",issue_buf_n[1],last_quiet1);
-    char *output = (char*)malloc(sizeof(char)*(issue_buf_size[1]+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf[1],issue_buf_size[1]);
-    //write(2,output,issue_buf_size[1]);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    free(output);
-#endif
-    //if (issue_buf_n[1] > 500) {
-    //  fprintf(stderr,"issue_buf_n[%d] too big %d (getsetorset)\n",1,issue_buf_n[1]);
-    //for (int i = 1; i <= 2; i++) {
-    //    fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-    //}
-    //for (int i = 1; i <= 2; i++) {
-    //    fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-    //}
-    //for (int i = 1; i <= 2; i++) {
-    //    fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-    //}
-    //    
-    //}
-    //buffer is ready to go!
-    //bufferevent_write(bev1, issue_buf[1], issue_buf_size[1]);
-    struct evbuffer* out1 = bufferevent_get_output(bev1);
-    if (evbuffer_expand(out1,issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-        
-    }
-    if (evbuffer_add(out1, issue_buf[1], issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-    }
-    
-    memset(issue_buf[1],0,issue_buf_size[1]);
-    issue_buf_pos[1] = issue_buf[1];
-    issue_buf_size[1] = 0;
-    issue_buf_n[1] = 0;
-   
-    if (issue_buf_n[2] >= 4) {
-        if (last_quiet2) {
-            issue_noop(now,2);
-            last_quiet2 = false;
-        }
-#ifdef DEBUGMC
-        fprintf(stderr,"getsetorset issuing to l2 %d reqs last quiet %d\n",issue_buf_n[2],last_quiet2);
-        char *output = (char*)malloc(sizeof(char)*(issue_buf_size[2]+522));
-        //fprintf(stderr,"-------------------------------------\n");
-        //memcpy(output,issue_buf[2],issue_buf_size[2]);
-        //write(2,output,issue_buf_size[2]);
-        //fprintf(stderr,"\n-------------------------------------\n");
-        free(output);
-#endif
-        //buffer is ready to go!
-        //bufferevent_write(bev2, issue_buf[2], issue_buf_size[2]);
-
-        struct evbuffer* out2 = bufferevent_get_output(bev2);
-        if (evbuffer_expand(out2,issue_buf_size[2])) {
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-            }
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-            }
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-            }
-            
-        }
-        if (evbuffer_add(out2, issue_buf[2], issue_buf_size[2])) {
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-            }
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-            }
-            for (int i = 1; i <= 2; i++) {
-                fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-            }
-        }
-        
-        memset(issue_buf[2],0,issue_buf_size[2]);
-        issue_buf_pos[2] = issue_buf[2];
-        issue_buf_size[2] = 0;
-        issue_buf_n[2] = 0;
-    }
 
     return ret;
 
@@ -604,6 +510,15 @@ int ConnectionMulti::issue_getsetorset(double now) {
  */
 int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, 
                                         int level, int flags, uint32_t l1opaque, uint8_t log) {
+  struct evbuffer *output = NULL;
+  switch (level) {
+      case 1:
+          output = bufferevent_get_output(bev1);
+          break;
+      case 2:
+          output = bufferevent_get_output(bev2);
+          break;
+  }
   //Operation op;
   Operation *pop = new Operation();
 
@@ -651,38 +566,11 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
       h.opcode = CMD_GETQ;
   }
   h.opaque = htonl(pop->opaque);
-
-  memcpy(issue_buf_pos[level],&h,24);
-  issue_buf_pos[level] += 24;
-  issue_buf_size[level] += 24;
-  memcpy(issue_buf_pos[level],key,keylen);
-  issue_buf_pos[level] += keylen;
-  issue_buf_size[level] += keylen;
-  issue_buf_n[level]++;
-  if (issue_buf_n[level] > 500) {
-      fprintf(stderr,"issue_buf_n[%d] too big %d (get_with_len)\n",level,issue_buf_n[level]);
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-    }
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-    }
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-    }
-  }
-
-#ifdef DEBUGS
-  for (int i = 1; i <= 2; i++) {
-      fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-  }
-#endif
   
-  if (read_state != LOADING) {
-      stats.tx_bytes += 24 + keylen;
-  }
-  
-  //stats.log_access(op);
+  evbuffer_add(output, &h, 24);
+  evbuffer_add(output, key, keylen);
+
+  stats.tx_bytes += 24 + keylen;
   return 1;
 }
 
@@ -690,6 +578,15 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
  * Issue a get request to the server.
  */
 int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int level) {
+  struct evbuffer *output = NULL;
+  switch (level) {
+      case 1:
+          output = bufferevent_get_output(bev1);
+          break;
+      case 2:
+          output = bufferevent_get_output(bev2);
+          break;
+  }
   Operation *pop = new Operation();
 
 #if HAVE_CLOCK_GETTIME
@@ -726,27 +623,17 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_TOUCH, htons(keylen),
-                        0x04, 0x00, {htons(0)},
+                        0x04, 0x00, htons(0),
                         htonl(keylen + 4) };
   h.opaque = htonl(pop->opaque);
-
-  memcpy(issue_buf_pos[level],&h,24);
-  issue_buf_pos[level] += 24;
-  issue_buf_size[level] += 24;
   
   uint32_t exp = 0;
-  memcpy(issue_buf_pos[level],&exp,4);
-  issue_buf_pos[level] += 4;
-  issue_buf_size[level] += 4;
+  evbuffer_add(output, &h, 24);
+  evbuffer_add(output, &exp, 4);
+  evbuffer_add(output, key, keylen);
+
   
-  memcpy(issue_buf_pos[level],key,keylen);
-  issue_buf_pos[level] += keylen;
-  issue_buf_size[level] += keylen;
-  issue_buf_n[level]++;
-  
-  if (read_state != LOADING) {
-      stats.tx_bytes += 24 + keylen;
-  }
+  stats.tx_bytes += 24 + keylen;
   
   //stats.log_access(op);
   return 1;
@@ -755,7 +642,16 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
 /**
  * Issue a delete request to the server.
  */
-int ConnectionMulti::issue_delete(const char* key, double now, int level) {
+int ConnectionMulti::issue_delete(const char* key, double now, int level, int log) {
+  struct evbuffer *output = NULL;
+  switch (level) {
+      case 1:
+          output = bufferevent_get_output(bev1);
+          break;
+      case 2:
+          output = bufferevent_get_output(bev2);
+          break;
+  }
   //Operation op;
   Operation *pop = new Operation();
 
@@ -779,6 +675,7 @@ int ConnectionMulti::issue_delete(const char* key, double now, int level) {
   pop->type = Operation::DELETE;
   pop->opaque = opaque[level]++;
   pop->level = level;
+  pop->log = log;
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
@@ -792,40 +689,40 @@ int ConnectionMulti::issue_delete(const char* key, double now, int level) {
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_DELETE, htons(keylen),
-                        0x00, 0x00, {htons(0)},
+                        0x00, 0x00, htons(0),
                         htonl(keylen) };
   h.opaque = htonl(pop->opaque);
-
-  memcpy(issue_buf_pos[level],&h,24);
-  issue_buf_pos[level] += 24;
-  issue_buf_size[level] += 24;
-  memcpy(issue_buf_pos[level],key,keylen);
-  issue_buf_pos[level] += keylen;
-  issue_buf_size[level] += keylen;
-  issue_buf_n[level]++;
   
-  if (read_state != LOADING) {
-      stats.tx_bytes += 24 + keylen;
-  }
+  evbuffer_add(output, &h, 24);
+  evbuffer_add(output, key, keylen);
+
+  stats.tx_bytes += 24 + keylen;
   
   //stats.log_access(op);
   return 1;
 }
 
 void ConnectionMulti::issue_noop(double now, int level) {
-    Operation op;
-    
-    if (now == 0.0) op.start_time = get_time();
-    else op.start_time = now;
+   struct evbuffer *output = NULL;
+   switch (level) {
+       case 1:
+           output = bufferevent_get_output(bev1);
+           break;
+       case 2:
+           output = bufferevent_get_output(bev2);
+           break;
+   }
+   Operation op;
+   
+   if (now == 0.0) op.start_time = get_time();
+   else op.start_time = now;
 
-    binary_header_t h = { 0x80, CMD_NOOP, 0x0000,
-                          0x00, 0x00, {htons(0)},
-                          0x00 };
+   binary_header_t h = { 0x80, CMD_NOOP, 0x0000,
+                         0x00, 0x00, {htons(0)},
+                         0x00 };
+   
+   evbuffer_add(output, &h, 24);
 
-    memcpy(issue_buf_pos[level],&h,24);
-    issue_buf_pos[level] += 24;
-    issue_buf_size[level] += 24;
-    issue_buf_n[level]++;
 }
 
 /**
@@ -833,6 +730,16 @@ void ConnectionMulti::issue_noop(double now, int level) {
  */
 int ConnectionMulti::issue_set(const char* key, const char* value, int length,
                            double now, int level, int flags, uint32_t l1opaque, uint8_t log) {
+  
+   struct evbuffer *output = NULL;
+   switch (level) {
+       case 1:
+           output = bufferevent_get_output(bev1);
+           break;
+       case 2:
+           output = bufferevent_get_output(bev2);
+           break;
+   }
   //Operation op; 
   Operation *pop = new Operation();
 
@@ -873,68 +780,16 @@ int ConnectionMulti::issue_set(const char* key, const char* value, int length,
                         htonl(keylen + 8 + length) }; 
   h.opaque = htonl(pop->opaque);
   
-  memcpy(issue_buf_pos[level],&h,24);
-  issue_buf_pos[level] += 24;
-  issue_buf_size[level] += 24;
-
   uint32_t f = htonl(flags);
-  memcpy(issue_buf_pos[level],&f,4);
-  issue_buf_pos[level] += 4;
-  issue_buf_size[level] += 4;
-  
   uint32_t exp = 0;
-  memcpy(issue_buf_pos[level],&exp,4);
-  issue_buf_pos[level] += 4;
-  issue_buf_size[level] += 4;
-
-  memcpy(issue_buf_pos[level],key,keylen);
-  issue_buf_pos[level] += keylen;
-  issue_buf_size[level] += keylen;
- 
-//if (issue_buf_pos[level]+length >= issue_buf[level]+MAX_BUFFER_SIZE-1 ||
-//    issue_buf_size[level]+length >= MAX_BUFFER_SIZE-1) {
-//  
-//  fprintf(stderr,"issing set: %s, size: %u, level %d, flags: %d\n",key,length,level,flags);
-//  for (int i = 1; i <= 2; i++) {
-//      fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-//  }
-//  for (int i = 1; i <= 2; i++) {
-//      fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-//  }
-//  for (int i = 1; i <= 2; i++) {
-//      fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-//  }
-//
-//}
-  memcpy(issue_buf_pos[level],value,length);
-  issue_buf_pos[level] += length;
-  issue_buf_size[level] += length;
-  issue_buf_n[level]++;
   
-  if (issue_buf_n[level] > 500) {
-      fprintf(stderr,"issue_buf_n[%d] too big %d (set: %d)\n",level,issue_buf_n[level],log);
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-    }
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-    }
-    for (int i = 1; i <= 2; i++) {
-        fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-    }
-  }
-  
-#ifdef DEBUGS
-  for (int i = 1; i <= 2; i++) {
-      fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-  }
-#endif
+  evbuffer_add(output, &h, 24);
+  evbuffer_add(output, &f, 4);
+  evbuffer_add(output, &exp, 4);
+  evbuffer_add(output, key, keylen);
+  evbuffer_add(output, value, length);
 
-  if (read_state != LOADING) {
-      stats.tx_bytes += length + 32 + keylen;
-  }
-
-  //stats.log_access(op);
+  stats.tx_bytes += length + 32 + keylen;
   return 1;
 }
 
@@ -1043,26 +898,16 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
   last_rx = now;
   uint8_t level = op->level;
   //op_queue[level].erase(op_queue[level].begin()+opopq);
-  op_queue[level][op->opaque] = 0;
-  delete op;
+  if (op == op_queue[level][op->opaque] && 
+          op->opaque == op_queue[level][op->opaque]->opaque) {
+    delete op_queue[level][op->opaque];
+  } else {
+      fprintf(stderr,"op_queue out of sync! Expected %p, got %p, opa1: %d opaq2: %d\n",
+              op,op_queue[level][op->opaque],op->opaque,op_queue[level][op->opaque]->opaque);
+  }
   op_queue_size[level]--;
   read_state = IDLE;
 
-  //lets check if we should output stats for the window
-  //Do the binning for percentile outputs
-  //crude at start
-  if ((options.misswindow != 0) && ( ((stats.window_accesses) % options.misswindow) == 0))
-  {
-      if (stats.window_gets != 0)
-      {
-        //printf("%lu,%.4f\n",(stats.accesses),
-        //        ((double)stats.window_get_misses/(double)stats.window_accesses));
-        stats.window_gets = 0;
-        stats.window_get_misses = 0;
-        stats.window_sets = 0;
-        stats.window_accesses = 0;
-      }
-  }
 
 }
 
@@ -1310,7 +1155,7 @@ static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, 
   if (opcode == CMD_GET && status == RESP_NOT_FOUND) {
       switch(level) {
           case 1:
-              conn->stats.get_misses_l1++;
+              //conn->stats.get_misses_l1++;
               break;
           case 2:
               conn->stats.get_misses_l2++;
@@ -1381,9 +1226,6 @@ void ConnectionMulti::read_callback1() {
   //GET was found, but wrong value size (i.e. update value)
   found = true;
 
-  //bool full_read = true;
-  //fprintf(stderr,"read_cb start with current queue of ops: %lu and issue_buf_n: %d\n",op_queue.size(),issue_buf_n);
-
   //if (op_queue.size() == 0) V("Spurious read callback.");
   bool full_read = true;
   while (full_read) {
@@ -1450,9 +1292,9 @@ void ConnectionMulti::read_callback1() {
 
                 } else {
                     if (found) {
-                        //if (op->incl == 1) {
-                        //    issue_touch(op->key.c_str(),op->valuelen,now,2);
-                        //}
+                        if (op->incl == 1) {
+                            issue_touch(op->key.c_str(),op->valuelen,now,2);
+                        }
                         finish_op(op,1);
                     } else {
                         finish_op(op,0);
@@ -1465,9 +1307,6 @@ void ConnectionMulti::read_callback1() {
             }
             break;
         case Operation::SET:
-            //if (op->incl == 1) {
-            //    issue_touch(op->key.c_str(),op->valuelen,0,2);
-            //}
             if (evict->evicted) {
                 if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
                     issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, 2, ITEM_INCL | ITEM_DIRTY, 0, 1);
@@ -1476,7 +1315,21 @@ void ConnectionMulti::read_callback1() {
                     issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, 2, ITEM_EXCL, 0, 1);
                     this->stats.excl_wbs++;
                 }
+                if (((evict->serverFlags & ITEM_DIRTY) == 0) && (op->log == 1)) {
+                    //we sent a SET request to l1, the item that was set is new since it didn't not get 
+                    //marked as dirty
+                    this->stats.set_misses_l1++;
+                }
+
+                if (op->incl == 2) {
+                    //if exclusive, remove from l2
+                    //here, we sent a set to l1
+                    issue_delete(op->key.c_str(),now,2,op->log);
+                }
             }
+            //if (op->incl == 1 && op->log == 1 && op->flags) {
+            //    issue_touch(op->key.c_str(),op->valuelen,0,2);
+            //}
             finish_op(op,1);
             break;
         default: 
@@ -1496,116 +1349,6 @@ void ConnectionMulti::read_callback1() {
   double now = get_time();
   if (check_exit_condition(now)) {
       return;
-  }
-#ifdef DEBUGMC
-  fprintf(stderr,"read_cb1 done with current queue of ops in l1: %d and issue_buf_n in l1: %d\n",op_queue_size[1],issue_buf_n[1]);
-  //for (auto x : op_queue[1]) {
-  //    if (x.opaque > 0) {
-  //      cerr << x.opaque << ": " << x.key << endl;
-  //    }
-  //}
-  //fprintf(stderr,"read_cb1 done with current queue of ops in l2: %d and issue_buf_n in l2: %d\n",op_queue_size[2],issue_buf_n[2]);
-  //for (auto x : op_queue[2]) {
-  //    if (x.opaque > 0) {
-  //      cerr << x.opaque << ": " << x.key << endl;
-  //    }
-  //}
-#endif
-  //buffer is ready to go!
-  if (issue_buf_n[1] >= 4) {
-    if (last_quiet1) {
-        issue_noop(now,1);
-        last_quiet1 = false;
-    }
-#ifdef DEBUGMC
-    fprintf(stderr,"read_cb1 writing %d reqs to l1, last quiet %d\n",issue_buf_n[1],last_quiet1);
-    char *output = (char*)malloc(sizeof(char)*(issue_buf_size[1]+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf[1],issue_buf_size[1]);
-    //write(2,output,issue_buf_size[1]);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    free(output);
-#endif
-
-    //bufferevent_write(bev1, issue_buf[1], issue_buf_size[1]);
-
-    struct evbuffer* out1 = bufferevent_get_output(bev1);
-    if (evbuffer_expand(out1,issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-        
-    }
-    if (evbuffer_add(out1, issue_buf[1], issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-    }
-
-
-    memset(issue_buf[1],0,issue_buf_size[1]);
-    issue_buf_pos[1] = issue_buf[1];
-    issue_buf_size[1] = 0;
-    issue_buf_n[1] = 0;
-  }
-  
-  if (issue_buf_n[2] >= 4) {
-    if (last_quiet2) {
-        issue_noop(now,2);
-        last_quiet2 = false;
-    }
-#ifdef DEBUGMC
-    fprintf(stderr,"read_cb1 writing %d reqs to l2, last quiet %d\n",issue_buf_n[2],last_quiet2);
-    char *output = (char*)malloc(sizeof(char)*(issue_buf_size[2]+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf[2],issue_buf_size[2]);
-    //write(2,output,issue_buf_size[2]);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    free(output);
-#endif
-
-    //bufferevent_write(bev2, issue_buf[2], issue_buf_size[2]);
-
-    struct evbuffer* out2 = bufferevent_get_output(bev2);
-    if (evbuffer_expand(out2,issue_buf_size[2])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-        
-    }
-    if (evbuffer_add(out2, issue_buf[2], issue_buf_size[2])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-    }
-    memset(issue_buf[2],0,issue_buf_size[2]);
-    issue_buf_pos[2] = issue_buf[2];
-    issue_buf_size[2] = 0;
-    issue_buf_n[2] = 0;
   }
 
   last_tx = now;
@@ -1639,8 +1382,6 @@ void ConnectionMulti::read_callback2() {
   //GET was found, but wrong value size (i.e. update value)
   found = true;
 
-  //bool full_read = true;
-  //fprintf(stderr,"read_cb start with current queue of ops: %lu and issue_buf_n: %d\n",op_queue.size(),issue_buf_n);
 
   //if (op_queue.size() == 0) V("Spurious read callback.");
   bool full_read = true;
@@ -1713,10 +1454,10 @@ void ConnectionMulti::read_callback2() {
                         SET_INCL(incl,flags);
                         //found in l2, set in l1
                         issue_set(key, &random_char[index],valuelen, now, 1, flags, 0, 0);
-                        if (incl == 2) {
-                            //if exclusive, remove from l2
-                            issue_delete(key,now,2);
-                        }
+                        //if (incl == 2) {
+                        //    //if exclusive, remove from l2
+                        //    issue_delete(key,now,2,0);
+                        //}
                         this->stats.copies_to_l1++;
                         finish_op(op,1);
 
@@ -1751,6 +1492,10 @@ void ConnectionMulti::read_callback2() {
             }
             break;
         case Operation::DELETE:
+            //check to see if it was a hit
+            if (!found && op->log) {
+                this->stats.set_misses_l2++;
+            }
             finish_op(op,1);
             break;
         default: 
@@ -1763,114 +1508,6 @@ void ConnectionMulti::read_callback2() {
   double now = get_time();
   if (check_exit_condition(now)) {
       return;
-  }
-#ifdef DEBUGMC
-  fprintf(stderr,"read_cb2 done with current queue of ops l1: %d and issue_buf_n: %d\n",op_queue_size[1],issue_buf_n[1]);
-  //for (auto x : op_queue[1]) {
-  //    if (x.opaque > 0) {
-  //      cerr << x.opaque << ": " << x.key << endl;
-  //    }
-  //}
-  //fprintf(stderr,"read_cb2 done with current queue of ops l2: %d and issue_buf_n: %d\n",op_queue_size[2],issue_buf_n[2]);
-  //for (auto x : op_queue[2]) {
-  //    if (x.opaque > 0) {
-  //      cerr << x.opaque << ": " << x.key << endl;
-  //    }
-  //}
-#endif
-  //buffer is ready to go!
-  if (issue_buf_n[2] >= 4) {
-    if (last_quiet2) {
-        issue_noop(now,2);
-        last_quiet2 = false;
-    }
-#ifdef DEBUGMC
-    fprintf(stderr,"read_cb2 writing %d reqs, last quiet %d\n",issue_buf_n[2],last_quiet2);
-    char *output = (char*)malloc(sizeof(char)*(issue_buf_size[2]+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf[2],issue_buf_size[2]);
-    //write(2,output,issue_buf_size[2]);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    free(output);
-#endif
-
-    //bufferevent_write(bev2, issue_buf[2], issue_buf_size[2]);
-
-    struct evbuffer* out2 = bufferevent_get_output(bev2);
-    if (evbuffer_expand(out2,issue_buf_size[2])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-        
-    }
-    if (evbuffer_add(out2, issue_buf[2], issue_buf_size[2])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-    }
-    memset(issue_buf[2],0,issue_buf_size[2]);
-    issue_buf_pos[2] = issue_buf[2];
-    issue_buf_size[2] = 0;
-    issue_buf_n[2] = 0;
-  }
-  //buffer is ready to go!
-  if (issue_buf_n[1] >= 4) {
-    if (last_quiet1) {
-        issue_noop(now,1);
-        last_quiet1 = false;
-    }
-#ifdef DEBUGMC
-    fprintf(stderr,"read_cb1 writing %d reqs to l1, last quiet %d\n",issue_buf_n[1],last_quiet1);
-    char *output = (char*)malloc(sizeof(char)*(issue_buf_size[1]+512));
-    //fprintf(stderr,"-------------------------------------\n");
-    //memcpy(output,issue_buf[1],issue_buf_size[1]);
-    //write(2,output,issue_buf_size[1]);
-    //fprintf(stderr,"\n-------------------------------------\n");
-    free(output);
-#endif
-
-    //bufferevent_write(bev1, issue_buf[1], issue_buf_size[1]);
-
-    struct evbuffer* out1 = bufferevent_get_output(bev1);
-    if (evbuffer_expand(out1,issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-        
-    }
-    if (evbuffer_add(out1, issue_buf[1], issue_buf_size[1])) {
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"op_queue_size[%d]: %u\n",i,op_queue_size[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_n[%d]: %u\n",i,issue_buf_n[i]);
-        }
-        for (int i = 1; i <= 2; i++) {
-            fprintf(stderr,"issue buf_size[%d]: %u\n",i,issue_buf_size[i]);
-        }
-    }
-    memset(issue_buf[1],0,issue_buf_size[1]);
-    issue_buf_pos[1] = issue_buf[1];
-    issue_buf_size[1] = 0;
-    issue_buf_n[1] = 0;
   }
 
   last_tx = now;

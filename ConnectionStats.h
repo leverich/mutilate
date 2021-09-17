@@ -44,6 +44,7 @@ class ConnectionStats {
    accesses(0),
    get_misses(0), 
    get_misses_l1(0), get_misses_l2(0), 
+   set_misses_l1(0), set_misses_l2(0), 
    excl_wbs(0), incl_wbs(0), 
    copies_to_l1(0),
    window_gets(0), window_sets(0), window_accesses(0),
@@ -83,6 +84,7 @@ class ConnectionStats {
   uint64_t gets_l1, sets_l1, gets_l2, sets_l2;
   uint64_t accesses, get_misses;
   uint64_t get_misses_l1, get_misses_l2;
+  uint64_t set_misses_l1, set_misses_l2;
   uint64_t excl_wbs, incl_wbs;
   uint64_t copies_to_l1;
   uint64_t window_gets, window_sets,  window_accesses, window_get_misses;
@@ -178,6 +180,8 @@ class ConnectionStats {
     get_misses += cs.get_misses;
     get_misses_l1 += cs.get_misses_l1;
     get_misses_l2 += cs.get_misses_l2;
+    set_misses_l1 += cs.set_misses_l1;
+    set_misses_l2 += cs.set_misses_l2;
     excl_wbs += cs.excl_wbs;
     incl_wbs += cs.incl_wbs;
     copies_to_l1 += cs.copies_to_l1;
@@ -200,6 +204,8 @@ class ConnectionStats {
     get_misses += as.get_misses;
     get_misses_l1 += as.get_misses_l1;
     get_misses_l2 += as.get_misses_l2;
+    set_misses_l1 += as.set_misses_l1;
+    set_misses_l2 += as.set_misses_l2;
     excl_wbs += as.excl_wbs;
     incl_wbs += as.incl_wbs;
     copies_to_l1 += as.copies_to_l1;

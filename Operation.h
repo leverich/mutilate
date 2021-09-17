@@ -20,9 +20,7 @@ public:
   uint32_t opaque;
   uint32_t l1opaque;
   uint16_t clsid;
-  uint8_t level;
-  uint8_t log;
-  uint8_t incl;
+  uint16_t flags;
   string key;
 
   double time() const { return (end_time - start_time) * 1000000; }

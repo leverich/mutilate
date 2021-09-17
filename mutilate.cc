@@ -646,12 +646,12 @@ int main(int argc, char **argv) {
     printf("\n");
 
     printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
-           (double) stats.get_misses/(stats.gets+stats.sets)*100);
+           (double) stats.get_misses/(stats.gets)*100);
     if (servers.size() == 2) {
-        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1,
-               (double) stats.get_misses_l1/(stats.gets + stats.sets)*100);
-        printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2,
-               (double) stats.get_misses_l2/(stats.gets + stats.sets)*100);
+        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 + stats.set_misses_l1,
+               (double) (stats.get_misses_l1 + stats.set_misses_l1) /(stats.gets + stats.sets)*100);
+        printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2 + stats.set_misses_l2,
+               (double) (stats.get_misses_l2 + stats.set_misses_l2) /(stats.gets + stats.sets)*100);
         printf("L2 Writes = %" PRIu64 " (%.1f%%)\n", stats.sets_l2,
                (double) stats.sets_l2/(stats.gets+stats.sets)*100);
         
