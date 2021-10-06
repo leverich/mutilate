@@ -47,6 +47,9 @@ class ConnectionStats {
    set_misses_l1(0), set_misses_l2(0), 
    excl_wbs(0), incl_wbs(0), 
    copies_to_l1(0),
+   delete_misses_l2(0),
+   delete_hits_l2(0),
+   set_incl_hits_l1(0),set_excl_hits_l1(0),
    window_gets(0), window_sets(0), window_accesses(0),
    window_get_misses(0), skips(0), sampling(_sampling) {}
 
@@ -87,6 +90,9 @@ class ConnectionStats {
   uint64_t set_misses_l1, set_misses_l2;
   uint64_t excl_wbs, incl_wbs;
   uint64_t copies_to_l1;
+  uint64_t delete_misses_l2;
+  uint64_t delete_hits_l2;
+  uint64_t set_incl_hits_l1, set_excl_hits_l1;
   uint64_t window_gets, window_sets,  window_accesses, window_get_misses;
   uint64_t skips;
 
@@ -94,7 +100,7 @@ class ConnectionStats {
 
   bool sampling;
 
-  void log_get(Operation& op) { if (sampling) get_sampler.sample(op); window_gets++; gets++; }
+  void log_get(Operation& op) { if (sampling) get_sampler.sample(op); } //window_gets++; gets++; }
   void log_set(Operation& op) { if (sampling) set_sampler.sample(op); window_sets++; sets++; }
   
   void log_get_l1(Operation& op) { if (sampling) get_l1_sampler.sample(op); window_gets++; gets_l1++;  }
@@ -185,6 +191,10 @@ class ConnectionStats {
     excl_wbs += cs.excl_wbs;
     incl_wbs += cs.incl_wbs;
     copies_to_l1 += cs.copies_to_l1;
+    delete_misses_l2 += cs.delete_misses_l2;
+    delete_hits_l2 += cs.delete_hits_l2;
+    set_excl_hits_l1 += cs.set_excl_hits_l1;
+    set_incl_hits_l1 += cs.set_incl_hits_l1;
     skips += cs.skips;
 
     start = cs.start;
@@ -209,6 +219,10 @@ class ConnectionStats {
     excl_wbs += as.excl_wbs;
     incl_wbs += as.incl_wbs;
     copies_to_l1 += as.copies_to_l1;
+    delete_misses_l2 += as.delete_misses_l2;
+    delete_hits_l2 += as.delete_hits_l2;
+    set_excl_hits_l1 += as.set_excl_hits_l1;
+    set_incl_hits_l1 += as.set_incl_hits_l1;
     skips += as.skips;
 
     start = as.start;

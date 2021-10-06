@@ -11,6 +11,9 @@ public:
   uint64_t set_misses_l1, set_misses_l2;
   uint64_t excl_wbs, incl_wbs;
   uint64_t copies_to_l1;
+  uint64_t delete_misses_l2;
+  uint64_t delete_hits_l2;
+  uint64_t set_incl_hits_l1, set_excl_hits_l1;
   uint64_t skips;
 
   double start, stop;

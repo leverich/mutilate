@@ -39,6 +39,7 @@ void bev_read_cb1(struct bufferevent *bev, void *ptr);
 void bev_event_cb2(struct bufferevent *bev, short events, void *ptr);
 void bev_read_cb2(struct bufferevent *bev, void *ptr);
 void bev_write_cb(struct bufferevent *bev, void *ptr);
+void bev_write_cb_m(struct bufferevent *bev, void *ptr);
 void timer_cb(evutil_socket_t fd, short what, void *ptr);
 void timer_cb_m(evutil_socket_t fd, short what, void *ptr);
 
@@ -180,7 +181,7 @@ class ConnectionMulti {
 public:
   ConnectionMulti(struct event_base* _base, struct evdns_base* _evdns,
              string _hostname1, string _hostname2, string _port, options_t options,
-             bool sampling = true);
+             bool sampling = true, int fd1 = -1, int fd2 = -1);
 
   ~ConnectionMulti();
 
@@ -194,7 +195,10 @@ public:
   void set_priority(int pri);
 
   // state commands
-  void start() { drive_write_machine(); }
+  void start() { 
+      //fprintf(stderr,"connid: %d starting...\n",cid); 
+      drive_write_machine(); 
+  }
   void start_loading();
   void reset();
   bool check_exit_condition(double now = 0.0);
@@ -207,6 +211,7 @@ public:
   void write_callback();
   void timer_callback();
   
+  int eof;
   uint32_t get_cid();
   //void set_queue(ConcurrentQueue<string> *a_trace_queue);
   void set_queue(queue<string> *a_trace_queue);
@@ -227,6 +232,7 @@ private:
   double last_rx;      // Used to moderate transmission rate.
   double last_tx;
 
+  vector<string> wb_keys;
   enum read_state_enum {
     INIT_READ,
     CONN_SETUP,
@@ -261,12 +267,12 @@ private:
   bool last_quiet2;
   uint32_t total;
   uint32_t cid;
-  int eof;
   
   //std::vector<std::queue<Operation>> op_queue;
   Operation ***op_queue;
   uint32_t *op_queue_size;
 
+  map<string,int> key_hist;
 
   Generator *valuesize;
   Generator *keysize;
@@ -287,11 +293,10 @@ private:
   // request functions
   void issue_sasl();
   void issue_noop(double now = 0.0, int level = 1);
-  int issue_touch(const char* key, int valuelen, double now = 0.0, int level = 1);
-  int issue_delete(const char* key, double now = 0.0, int level = 1, int log = 1);
-  int issue_get_with_len(const char* key, int valuelen, double now = 0.0, bool quiet = false, int level = 1, int flags = 0, uint32_t l1opaque = 0, uint8_t log = 1);
-  int issue_set(const char* key, const char* value, int length,
-                 double now = 0.0, int level = 1, int flags = 0, uint32_t l1opaque = 0, uint8_t log = 1);
+  int issue_touch(const char* key, int valuelen, double now, int level);
+  int issue_delete(const char* key, double now, uint32_t flags);
+  int issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
+  int issue_set(const char* key, const char* value, int length, double now, uint32_t flags);
 
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);

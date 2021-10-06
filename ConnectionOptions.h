@@ -5,6 +5,9 @@
 
 typedef struct {
   int apps;
+  int rand_admit;
+  int threshold;
+  int wb_all;
   bool miss_through;
   int connections;
   bool blocking;

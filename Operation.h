@@ -18,10 +18,10 @@ public:
 
   int valuelen;
   uint32_t opaque;
-  uint32_t l1opaque;
+  uint32_t flags;
   uint16_t clsid;
-  uint16_t flags;
   string key;
+  Operation *l1;
 
   double time() const { return (end_time - start_time) * 1000000; }
 };

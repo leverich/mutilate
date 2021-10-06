@@ -7,6 +7,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <netinet/tcp.h>
+#include <fcntl.h> /* Added for the nonblocking socket */
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -454,6 +457,7 @@ string name_to_ipaddr(string host) {
 }
 
 int main(int argc, char **argv) {
+  //event_enable_debug_mode();
   if (cmdline_parser(argc, argv, &args) != 0) exit(-1);
 
   for (unsigned int i = 0; i < args.verbose_given; i++)
@@ -630,28 +634,49 @@ int main(int argc, char **argv) {
 
   if (!args.scan_given && !args.loadonly_given) {
     stats.print_header();
-    stats.print_stats("read",   stats.get_sampler);
-    stats.print_stats("update", stats.set_sampler);
-    stats.print_stats("op_q",   stats.op_sampler);
+    stats.print_stats("read     ",   stats.get_sampler);
+    stats.print_stats("read_l1  ",   stats.get_l1_sampler);
+    stats.print_stats("read_l2  ",   stats.get_l2_sampler);
+    stats.print_stats("update_l1", stats.set_l1_sampler);
+    stats.print_stats("update_l2", stats.set_l2_sampler);
+    stats.print_stats("op_q     ",   stats.op_sampler);
 
     int total = stats.gets_l1 + stats.gets_l2 + stats.sets_l1 + stats.sets_l2;
 
     printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
            total / (stats.stop - stats.start),
            total, stats.stop - stats.start);
+    
+    int rtotal = stats.gets +  stats.sets;
+    printf("\nTotal RPS = %.1f (%d / %.1fs)\n",
+           rtotal / (stats.stop - stats.start),
+           rtotal, stats.stop - stats.start);
 
     if (args.search_given && peak_qps > 0.0)
       printf("Peak QPS  = %.1f\n", peak_qps);
 
     printf("\n");
 
-    printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
+    printf("GET Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
            (double) stats.get_misses/(stats.gets)*100);
     if (servers.size() == 2) {
-        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 + stats.set_misses_l1,
-               (double) (stats.get_misses_l1 + stats.set_misses_l1) /(stats.gets + stats.sets)*100);
-        printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2 + stats.set_misses_l2,
-               (double) (stats.get_misses_l2 + stats.set_misses_l2) /(stats.gets + stats.sets)*100);
+        int64_t additional = 0;
+        if (stats.delete_misses_l2 > 0) {
+            additional = stats.delete_misses_l2 - stats.set_excl_hits_l1;
+            fprintf(stderr,"delete misses_l2 %lu, delete hits_l2 %lu, excl_set_l1_hits: %lu\n",stats.delete_misses_l2,stats.delete_hits_l2,stats.set_excl_hits_l1);
+            if (additional < 0) {
+                fprintf(stderr,"additional misses is neg! %ld\n",additional);
+                additional = 0;
+            }
+        }
+        //printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 + stats.set_misses_l1,
+        //       (double) (stats.get_misses_l1 + stats.set_misses_l1) /(stats.gets + stats.sets)*100);
+        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 ,
+               (double) (stats.get_misses_l1) /(stats.gets)*100);
+        printf("SET Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.set_misses_l1 ,
+               (double) (stats.set_misses_l1) /(stats.sets)*100);
+        //printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2,
+        //       (double) (stats.get_misses_l2) /(stats.gets)*100);
         printf("L2 Writes = %" PRIu64 " (%.1f%%)\n", stats.sets_l2,
                (double) stats.sets_l2/(stats.gets+stats.sets)*100);
         
@@ -988,8 +1013,9 @@ void* reader_thread(void *arg) {
                         stringstream ss(full_line);
                         string rT;
                         string rApp;
+                        string rKey;
+                        string rOp;
                         if (twitter_trace == 1) {
-                            string rKey;
                             string rKeySize;
                             string rvaluelen;
                             size_t n = std::count(full_line.begin(), full_line.end(), ',');
@@ -1010,6 +1036,8 @@ void* reader_thread(void *arg) {
                             if (n == 4) {
                                 getline( ss, rT, ',');
                                 getline( ss, rApp, ',');
+                                getline( ss, rOp, ',' );
+                                getline( ss, rKey, ',' );
                                 appid = (stoi(rApp)) % trace_queue->size();
                             } else {
                                 continue;
@@ -1121,7 +1149,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   struct event_base *base;
   struct evdns_base *evdns;
   struct event_config *config;
-  //event_enable_debug_mode();
 
 
   if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
@@ -1141,8 +1168,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   //  event_base_priority_init(base, 2);
 
   // FIXME: May want to move this to after all connections established.
-  double start = get_time();
-  double now = start;
 
 
   if (servers.size() == 1) {
@@ -1177,9 +1202,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         int connected = 0;
         int s = 2;
         for (int i = 0; i < tries; i++) {
-          pthread_mutex_lock(&flock);
           int ret = conn->do_connect();
-          pthread_mutex_unlock(&flock);
           if (ret) {
               connected = 1;
               fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c+1);
@@ -1203,6 +1226,8 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         if (c == 0) server_lead.push_back(conn);
       }
     }
+    double start = get_time();
+    double now = start;
 
     // Wait for all Connections to become IDLE.
     while (1) {
@@ -1413,25 +1438,71 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     srand(time(NULL));
     for (int c = 0; c < conns; c++) {
-      ConnectionMulti* conn = new ConnectionMulti(base, evdns, 
-              hostname1, hostname2, port, options,args.agentmode_given ? false : true);
-      int tries = 120;
-      int connected = 0;
+
+      int fd1 = -1;
+
+      if ( (fd1 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        exit(-1);
+      }
+
+      struct sockaddr_un sin1;
+      memset(&sin1, 0, sizeof(sin1));
+      sin1.sun_family = AF_LOCAL;
+      strcpy(sin1.sun_path, hostname1.c_str());
+
+      fcntl(fd1, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      int addrlen;
+      addrlen = sizeof(sin1);
+
+      int max_tries = 13;
+      int n_tries = 0;
       int s = 2;
-      for (int i = 0; i < tries; i++) {
-        pthread_mutex_lock(&flock);
-        int ret = conn->do_connect();
-        pthread_mutex_unlock(&flock);
-        if (ret) {
-            connected = 1;
-            fprintf(stderr,"thread %lu, multi conn: %d, connected!\n",pthread_self(),c+1);
-            break;
+      while (connect(fd1, (struct sockaddr*)&sin1, addrlen) == -1) {
+        perror("l1 connect error");
+        if (n_tries++ > max_tries) {
+            exit(-1);
         }
         int d = s + rand() % 10;
         sleep(d);
-      } 
+        s += 4;
+      }
+      
+      int fd2 = -1;
+      if ( (fd2 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("l2 socket error");
+        exit(-1);
+      }
+      struct sockaddr_un sin2;
+      memset(&sin2, 0, sizeof(sin2));
+      sin2.sun_family = AF_LOCAL;
+      strcpy(sin2.sun_path, hostname2.c_str());
+      fcntl(fd2, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      addrlen = sizeof(sin2);
+      n_tries = 0;
+      s = 2;
+      while (connect(fd2, (struct sockaddr*)&sin2, addrlen) == -1) {
+        perror("l2 connect error");
+        if (n_tries++ > max_tries) {
+            exit(-1);
+        }
+        int d = s + rand() % 10;
+        sleep(d);
+        s += 4;
+      }
+
+
+      ConnectionMulti* conn = new ConnectionMulti(base, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true, fd1, fd2);
+     
+      int connected = 0;
+      if (conn) {
+          connected = 1;
+      }
       int cid = conn->get_cid();
+      
       if (connected) {
+        fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
         fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front().c_str());
         conn->set_queue(trace_queue->at(cid));
         conn->set_lock(mutexes->at(cid));
@@ -1440,7 +1511,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         fprintf(stderr,"conn multi: %d, not connected!!\n",c);
 
       }
-      if (c == 0) server_lead.push_back(conn);
     }
 
     // Wait for all Connections to become IDLE.
@@ -1456,148 +1526,35 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       if (restart) continue;
       else break;
     }
-
-
-    // FIXME: Remove.  Not needed, testing only.
-    //  // FIXME: Synchronize start_time here across threads/nodes.
-    //  pthread_barrier_wait(&barrier);
-
-    // Warmup connection.
-    if (options.warmup > 0) {
-        if (master) V("Warmup start.");
-
-#ifdef HAVE_LIBZMQ
-        if (args.agent_given || args.agentmode_given) {
-          if (master) V("Synchronizing.");
-
-          // 1. thread barrier: make sure our threads ready before syncing agents
-          // 2. sync agents: all threads across all agents are now ready
-          // 3. thread barrier: don't release our threads until all agents ready
-          pthread_barrier_wait(&barrier);
-          if (master) sync_agent(socket);
-          pthread_barrier_wait(&barrier);
-
-          if (master) V("Synchronized.");
-        }
-#endif
-
-      int old_time = options.time;
-      //    options.time = 1;
-
-      start = get_time();
-      for (ConnectionMulti *conn: connections) {
-        conn->start_time = start;
-        conn->options.time = options.warmup;
-        conn->start(); // Kick the Connection into motion.
-      }
-
-      while (1) {
-        event_base_loop(base, loop_flag);
-
-        //#ifdef USE_CLOCK_GETTIME
-        //      now = get_time();
-        //#else
-        struct timeval now_tv;
-        event_base_gettimeofday_cached(base, &now_tv);
-        now = tv_to_double(&now_tv);
-        //#endif
-
-        bool restart = false;
-        for (ConnectionMulti *conn: connections)
-          if (!conn->check_exit_condition(now))
-            restart = true;
-
-        if (restart) continue;
-        else break;
-      }
-
-      bool restart = false;
-      for (ConnectionMulti *conn: connections)
-        if (!conn->is_ready()) restart = true;
-
-      if (restart) {
-
-      // Wait for all Connections to become IDLE.
-      while (1) {
-        // FIXME: If there were to use EVLOOP_ONCE and all connections
-        // become ready before event_base_loop is called, this will
-        // deadlock.  We should check for IDLE before calling
-        // event_base_loop.
-        event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
-
-        bool restart = false;
-        for (ConnectionMulti *conn: connections)
-          if (!conn->is_ready()) restart = true;
-
-        if (restart) continue;
-        else break;
-      }
-      }
-
-      for (ConnectionMulti *conn: connections) {
-        conn->reset();
-        conn->options.time = old_time;
-      }
-
-      if (master) V("Warmup stop.");
-    }
-
-
-    // FIXME: Synchronize start_time here across threads/nodes.
-    pthread_barrier_wait(&barrier);
-
-    if (master && args.wait_given) {
-      if (get_time() < boot_time + args.wait_arg) {
-        double t = (boot_time + args.wait_arg)-get_time();
-        V("Sleeping %.1fs for -W.", t);
-        sleep_time(t);
-      }
-    }
-
-#ifdef HAVE_LIBZMQ
-    if (args.agent_given || args.agentmode_given) {
-      if (master) V("Synchronizing.");
-
-      pthread_barrier_wait(&barrier);
-      if (master) sync_agent(socket);
-      pthread_barrier_wait(&barrier);
-
-      if (master) V("Synchronized.");
-    }
-#endif
-
-    if (master && !args.scan_given && !args.search_given)
-      V("started at %f", get_time());
-
-    start = get_time();
+    
+    double start = get_time();
+    double now = start;
     for (ConnectionMulti *conn: connections) {
-      conn->start_time = start;
-      conn->start(); // Kick the Connection into motion.
-    }
-
-    //  V("Start = %f", start);
-    fprintf(stderr,"Start = %f", start);
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+    } 
+    fprintf(stderr,"Start = %f\n", start);
 
     // Main event loop.
     while (1) {
       event_base_loop(base, loop_flag);
-
-      //#if USE_CLOCK_GETTIME
-      //    now = get_time();
-      //#else
       struct timeval now_tv;
       event_base_gettimeofday_cached(base, &now_tv);
       now = tv_to_double(&now_tv);
-      //#endif
 
       bool restart = false;
-      for (ConnectionMulti *conn: connections)
-        if (!conn->check_exit_condition(now))
+      for (ConnectionMulti *conn: connections) {
+        if (!conn->check_exit_condition(now)) {
           restart = true;
-
+        }
+      }
       if (restart) continue;
       else break;
+
     }
+
+
+    //  V("Start = %f", start);
 
     if (master && !args.scan_given && !args.search_given)
       V("stopped at %f  options.time = %d", get_time(), options.time);
@@ -1626,6 +1583,9 @@ void args_to_options(options_t* options) {
   options->server_given = args.server_given;
   options->roundrobin = args.roundrobin_given;
   options->apps = args.apps_arg;
+  options->rand_admit = args.rand_admit_arg;
+  options->threshold = args.threshold_arg;
+  options->wb_all = args.wb_all_arg;
   if (args.inclusives_given) {
     memset(options->inclusives,0,256);
     strncpy(options->inclusives,args.inclusives_arg,256);

@@ -2,7 +2,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-
+#include <time.h>
 #include <pthread.h>
 
 #include <event2/buffer.h>
@@ -36,10 +36,13 @@
 #define SRC_L2_H 64
 #define SRC_DIRECT_SET 128
 #define SRC_L1_COPY 256
+#define SRC_WB 512
 
 #define ITEM_INCL  4096
 #define ITEM_EXCL  8192
 #define ITEM_DIRTY 16384
+#define ITEM_SIZE_CHANGE 131072
+#define ITEM_WAS_HIT 262144
 
 #define LEVELS 2
 #define SET_INCL(incl,flags)     \
@@ -58,12 +61,24 @@
     else if (flags & ITEM_EXCL) incl = 2; \
 
 //#define OP_level(op) ( ((op)->flags & ITEM_L1) ? ITEM_L1 : ITEM_L2 )
-#define OP_level(op) ( (op)->flags ~& (LOG_OP | \
-                                     ITEM_INCL | ITEM_EXCL | ITEM_DIRTY \
-                                     SRC_L1_M | SRC_L1_H | SRC_L2_M | SRC_L2_H \
-                                     SRC_DIRECT_SET | SRC_L1_COPY ) )
-#define OP_src(op) ( (op)->flags ~& (ITEM_L1 | ITEM_L2 | LOG_OP | \
+#define OP_level(op) ( (op)->flags & ~(LOG_OP | \
+                                     ITEM_INCL | ITEM_EXCL | ITEM_DIRTY | \
+                                     SRC_L1_M | SRC_L1_H | SRC_L2_M | SRC_L2_H | \
+                                     SRC_DIRECT_SET | SRC_L1_COPY | SRC_WB ) )
+
+#define FLAGS_level(flags) ( flags & ~(LOG_OP | \
+                                     ITEM_INCL | ITEM_EXCL | ITEM_DIRTY | \
+                                     SRC_L1_M | SRC_L1_H | SRC_L2_M | SRC_L2_H | \
+                                     SRC_DIRECT_SET | SRC_L1_COPY | SRC_WB ) ) 
+
+#define OP_clu(op) ( (op)->flags & ~(LOG_OP | \
+                                     ITEM_L1 | ITEM_L2 | ITEM_DIRTY | \
+                                     SRC_L1_M | SRC_L1_H | SRC_L2_M | SRC_L2_H | \
+                                     SRC_DIRECT_SET | SRC_L1_COPY | SRC_WB ) )
+
+#define OP_src(op) ( (op)->flags & ~(ITEM_L1 | ITEM_L2 | LOG_OP | \
                                      ITEM_INCL | ITEM_EXCL | ITEM_DIRTY ) )
+
 #define OP_log(op) ((op)->flags & LOG_OP)
 #define OP_incl(op) ((op)->flags & ITEM_INCL)
 #define OP_excl(op) ((op)->flags & ITEM_EXCL)
@@ -205,7 +220,7 @@ void ConnectionMulti::output_op(Operation *op, int type, bool found) {
  */
 ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname1, string _hostname2, string _port, options_t _options,
-                       bool sampling ) :
+                       bool sampling, int fd1, int fd2 ) :
   start_time(0), stats(sampling), options(_options),
   hostname1(_hostname1), hostname2(_hostname2), port(_port), base(_base), evdns(_evdns)
 {
@@ -213,7 +228,7 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
   init_inclusives(options.inclusives);
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
-
+  srand(time(NULL));
   keygen = new KeyGenerator(keysize, options.records);
   
   total = 0;
@@ -250,8 +265,17 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
 
   }
   
+  bev1 = bufferevent_socket_new(base, fd1, BEV_OPT_CLOSE_ON_FREE);
+  bufferevent_setcb(bev1, bev_read_cb1, bev_write_cb_m, bev_event_cb1, this);
+  bufferevent_enable(bev1, EV_READ | EV_WRITE);
+  
+  bev2 = bufferevent_socket_new(base, fd2, BEV_OPT_CLOSE_ON_FREE);
+  bufferevent_setcb(bev2, bev_read_cb2, bev_write_cb_m, bev_event_cb2, this);
+  bufferevent_enable(bev2, EV_READ | EV_WRITE);
+  
   timer = evtimer_new(base, timer_cb_m, this);
 
+  read_state  = IDLE;
 }
 
 
@@ -272,13 +296,6 @@ int ConnectionMulti::do_connect() {
   int connected = 0;
   if (options.unix_socket) {
   
-    bev1 = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(bev1, bev_read_cb1, NULL, bev_event_cb1, this);
-    bufferevent_enable(bev1, EV_READ | EV_WRITE);
-    
-    bev2 = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-    bufferevent_setcb(bev2, bev_read_cb2, NULL, bev_event_cb2, this);
-    bufferevent_enable(bev2, EV_READ | EV_WRITE);
 
     struct sockaddr_un sin1;
     memset(&sin1, 0, sizeof(sin1));
@@ -287,14 +304,14 @@ int ConnectionMulti::do_connect() {
 
     int addrlen;
     addrlen = sizeof(sin1);
+
     int err = bufferevent_socket_connect(bev1,  (struct sockaddr*)&sin1, addrlen);
     if (err == 0) {
         connected = 1;
     } else {
-	connected = 0;
+        connected = 0;
         err = errno;
-	fprintf(stderr,"error %s\n",strerror(err));
-        bufferevent_free(bev1);
+        fprintf(stderr,"l1 error %s\n",strerror(err));
     }
     
     struct sockaddr_un sin2;
@@ -309,10 +326,10 @@ int ConnectionMulti::do_connect() {
     } else {
 	connected = 0;
         err = errno;
-	fprintf(stderr,"error %s\n",strerror(err));
-        bufferevent_free(bev2);
+	fprintf(stderr,"l2 error %s\n",strerror(err));
     }
   } 
+  read_state  = IDLE;
   return connected;
 }
 
@@ -330,11 +347,11 @@ ConnectionMulti::~ConnectionMulti() {
   free(op_queue_size);
   free(opaque);
   free(op_queue);
-  event_free(timer);
-  timer = NULL;
+  //event_free(timer);
+  //timer = NULL;
   // FIXME:  W("Drain op_q?");
-  bufferevent_free(bev1);
-  bufferevent_free(bev2);
+  //bufferevent_free(bev1);
+  //bufferevent_free(bev2);
 
   delete iagen;
   delete keygen;
@@ -389,11 +406,11 @@ int ConnectionMulti::issue_getsetorset(double now) {
         //pthread_mutex_lock(lock);
         if (!trace_queue->empty()) {
             line = trace_queue->front();
-            trace_queue->pop();
             if (line.compare("EOF") == 0) {
                 eof = 1;
+                fprintf(stderr,"cid %d done\n",cid);
                 return 1;
-            }
+            } 
             stringstream ss(line);
             //pthread_mutex_unlock(lock);
             int Op = 0;
@@ -441,14 +458,27 @@ int ConnectionMulti::issue_getsetorset(double now) {
                 if (rOp.compare("write") == 0) 
                     Op = 2;
             }
+            
     
     
+            if ((int)wb_keys.size() > options.depth*10) {
+                fprintf(stderr,"wb_queue size %d\n",(int)wb_keys.size());
+                return 1;
+            }
+            /* if this key is currently being written back wait for it to clear */
+            if (find(wb_keys.begin(), wb_keys.end(), rKey) != wb_keys.end()) {
+                  return 1;
+            }
+            
             char key[256];
             memset(key,0,256);
             strncpy(key, rKey.c_str(),255);
+
+            trace_queue->pop();
             int issued = 0;
             int incl = get_incl(vl,strlen(key));
             int flags = 0;
+            int touch = (rand() % 100);
             SET_INCL(incl,flags);
             switch(Op)
             {
@@ -457,13 +487,19 @@ int ConnectionMulti::issue_getsetorset(double now) {
                   //        key,vl,stoi(rT));
                   break;
               case 1:
-                  if (nissued < options.depth-1) {
-                    issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
-                    last_quiet1 = false;
-                  } else {
-                    issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
-                    last_quiet1 = false;
+                  //if (nissued < options.depth-1) {
+                  //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
+                  //  last_quiet1 = false;
+                  //} else {
+                  //}
+                  if (options.threshold > 0) {
+                    key_hist[key]++;
                   }
+                  issued = issue_get_with_len(key, vl, now, false, flags | LOG_OP | ITEM_L1);
+                  if (touch == 0 && incl == 1) {
+                    issue_touch(key,vl,now, ITEM_L2 | SRC_L1_H);
+                  }
+                  last_quiet1 = false;
                   this->stats.gets++;
                   break;
               case 2:
@@ -471,9 +507,11 @@ int ConnectionMulti::issue_getsetorset(double now) {
                       issue_noop(now,1);
                   }
                   int index = lrand48() % (1024 * 1024);
-                  flags |= ITEM_DIRTY;
-
-                  issued = issue_set(key, &random_char[index], vl, now, 1, flags, 0, 1);
+                  wb_keys.push_back(string(key));
+                  issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
+                  if (touch == 0 && incl == 1) {
+                    issue_touch(key,vl,now, ITEM_L2 | SRC_DIRECT_SET);
+                  }
                   last_quiet1 = false;
                   this->stats.sets++;
                   break;
@@ -508,14 +546,17 @@ int ConnectionMulti::issue_getsetorset(double now) {
 /**
  * Issue a get request to the server.
  */
-int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, 
-                                        int level, int flags, uint32_t l1opaque, uint8_t log) {
+int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1) {
+
   struct evbuffer *output = NULL;
-  switch (level) {
+  int level = 0;
+  switch (FLAGS_level(flags)) {
       case 1:
+          level = 1;
           output = bufferevent_get_output(bev1);
           break;
       case 2:
+          level = 2;
           output = bufferevent_get_output(bev2);
           break;
   }
@@ -542,14 +583,18 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
   pop->valuelen = valuelen;
   pop->type = Operation::GET;
   pop->opaque = opaque[level]++;
-  pop->level = level;
-  pop->l1opaque = l1opaque;
-  pop->log = log;
-  GET_INCL(pop->incl,flags);
+  pop->flags = flags;
   pop->clsid = get_class(valuelen,strlen(key));
+  if (l1 != NULL) {
+      pop->l1 = l1;
+  }
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
+
+#ifdef DEBUGS
+  fprintf(stderr,"issing get: %s, size: %u, level %d, flags: %d, opaque: %d\n",key,valuelen,level,flags,pop->opaque);
+#endif
   
   if (opaque[level] > OPAQUE_MAX) {
       opaque[level] = 1;
@@ -577,13 +622,16 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
 /**
  * Issue a get request to the server.
  */
-int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int level) {
+int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int flags) {
   struct evbuffer *output = NULL;
-  switch (level) {
+  int level = 0;
+  switch (FLAGS_level(flags)) {
       case 1:
+          level = 1;
           output = bufferevent_get_output(bev1);
           break;
       case 2:
+          level = 2;
           output = bufferevent_get_output(bev2);
           break;
   }
@@ -609,7 +657,7 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
   pop->valuelen = valuelen;
   pop->type = Operation::TOUCH;
   pop->opaque = opaque[level]++;
-  pop->level = level;
+  pop->flags = flags;
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
@@ -618,6 +666,9 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
       opaque[level] = 1;
   }
 
+#ifdef DEBUGS
+  fprintf(stderr,"issing touch: %s, size: %u, level %d, flags: %d, opaque: %d\n",key,valuelen,level,flags,pop->opaque);
+#endif
   //if (read_state == IDLE) read_state = WAITING_FOR_GET;
   uint16_t keylen = strlen(key);
 
@@ -642,13 +693,16 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
 /**
  * Issue a delete request to the server.
  */
-int ConnectionMulti::issue_delete(const char* key, double now, int level, int log) {
+int ConnectionMulti::issue_delete(const char* key, double now, uint32_t flags) {
   struct evbuffer *output = NULL;
-  switch (level) {
+  int level = 0;
+  switch (FLAGS_level(flags)) {
       case 1:
+          level = 1;
           output = bufferevent_get_output(bev1);
           break;
       case 2:
+          level = 2;
           output = bufferevent_get_output(bev2);
           break;
   }
@@ -674,8 +728,7 @@ int ConnectionMulti::issue_delete(const char* key, double now, int level, int lo
   pop->key = string(key);
   pop->type = Operation::DELETE;
   pop->opaque = opaque[level]++;
-  pop->level = level;
-  pop->log = log;
+  pop->flags = flags;
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
@@ -728,18 +781,20 @@ void ConnectionMulti::issue_noop(double now, int level) {
 /**
  * Issue a set request to the server.
  */
-int ConnectionMulti::issue_set(const char* key, const char* value, int length,
-                           double now, int level, int flags, uint32_t l1opaque, uint8_t log) {
+int ConnectionMulti::issue_set(const char* key, const char* value, int length, double now, uint32_t flags) {
   
-   struct evbuffer *output = NULL;
-   switch (level) {
-       case 1:
-           output = bufferevent_get_output(bev1);
-           break;
-       case 2:
-           output = bufferevent_get_output(bev2);
-           break;
-   }
+  struct evbuffer *output = NULL;
+  int level = 0;
+  switch (FLAGS_level(flags)) {
+      case 1:
+          level = 1;
+          output = bufferevent_get_output(bev1);
+          break;
+      case 2:
+          level = 2;
+          output = bufferevent_get_output(bev2);
+          break;
+  }
   //Operation op; 
   Operation *pop = new Operation();
 
@@ -755,17 +810,13 @@ int ConnectionMulti::issue_set(const char* key, const char* value, int length,
   pop->valuelen = length;
   pop->type = Operation::SET;
   pop->opaque = opaque[level]++;
-  pop->level = level;
-  pop->incl = 0;
-  pop->log = log;
-  pop->l1opaque = l1opaque;
-  GET_INCL(pop->incl,flags);
+  pop->flags = flags;
   pop->clsid = get_class(length,strlen(key));
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
 #ifdef DEBUGS
-  fprintf(stderr,"issing set: %s, size: %u, level %d, flags: %d\n",key,length,level,flags);
+  fprintf(stderr,"issing set: %s, size: %u, level %d, flags: %d, opaque: %d\n",key,length,level,flags,pop->opaque);
 #endif
   
   if (opaque[level] > OPAQUE_MAX) {
@@ -798,7 +849,7 @@ int ConnectionMulti::issue_set(const char* key, const char* value, int length,
  */
 void ConnectionMulti::pop_op(Operation *op) {
 
-  uint8_t level = op->level;
+  uint8_t level = OP_level(op);
   //op_queue[level].erase(op);
   op_queue_size[level]--;
   
@@ -840,7 +891,7 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
   if (options.successful_queries && was_hit) { 
     switch (op->type) {
     case Operation::GET: 
-        switch (op->level) {
+        switch (OP_level(op)) {
             case 1:
                 stats.log_get_l1(*op);
                 break;
@@ -850,7 +901,7 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
         }
         break;
     case Operation::SET: 
-        switch (op->level) {
+        switch (OP_level(op)) {
             case 1:
                 stats.log_set_l1(*op);
                 break;
@@ -866,20 +917,24 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
   } else {
     switch (op->type) {
     case Operation::GET: 
-        if (op->log) {
-            switch (op->level) {
+        if (OP_log(op)) {
+            switch (OP_level(op)) {
                 case 1:
                     stats.log_get_l1(*op);
                     break;
                 case 2:
                     stats.log_get_l2(*op);
+                    if (op->l1 != NULL) {
+                        op->l1->end_time = now;
+                        stats.log_get(*(op->l1));
+                    }
                     break;
             }
         }
         break;
     case Operation::SET:
-        if (op->log) {
-            switch (op->level) {
+        if (OP_log(op)) {
+            switch (OP_level(op)) {
                 case 1:
                     stats.log_set_l1(*op);
                     break;
@@ -896,7 +951,11 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
   }
 
   last_rx = now;
-  uint8_t level = op->level;
+  uint8_t level = OP_level(op);
+  if (op->l1 != NULL) {
+      delete op_queue[1][op->l1->opaque];
+      op_queue_size[1]--;
+  }
   //op_queue[level].erase(op_queue[level].begin()+opopq);
   if (op == op_queue[level][op->opaque] && 
           op->opaque == op_queue[level][op->opaque]->opaque) {
@@ -917,6 +976,9 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
  * Check if our testing is done and we should exit.
  */
 bool ConnectionMulti::check_exit_condition(double now) {
+  if (eof) {
+      return true;
+  }
   if (read_state == INIT_READ) return false;
   if (now == 0.0) now = get_time();
 
@@ -969,7 +1031,6 @@ void ConnectionMulti::event_callback1(short events) {
     fprintf(stderr,"libevent connected %s, fd: %u\n",hostname1.c_str(),bufferevent_getfd(bev1));
 #endif
 
-    drive_write_machine(); 
 
   } else if (events & BEV_EVENT_ERROR) {
     int err = bufferevent_socket_get_dns_error(bev1);
@@ -1045,7 +1106,6 @@ void ConnectionMulti::drive_write_machine(double now) {
       next_time = now + delay;
       double_to_tv(delay, &tv);
       evtimer_add(timer, &tv);
-      write_state = WAITING_FOR_TIME;
       write_state = ISSUING;
       break;
 
@@ -1053,19 +1113,7 @@ void ConnectionMulti::drive_write_machine(double now) {
       if ( (op_queue_size[1] >= (size_t) options.depth) || 
           (op_queue_size[2] >= (size_t) options.depth) ) {
         write_state = WAITING_FOR_OPQ;
-        return;
-      } else if (now < next_time) {
-        write_state = WAITING_FOR_TIME;
-        break; // We want to run through the state machine one more time
-               // to make sure the timer is armed.
-      } else if (options.moderate && now < last_rx + 0.00025) {
-        write_state = WAITING_FOR_TIME;
-        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-          delay = last_rx + 0.00025 - now;
-          double_to_tv(delay, &tv);
-          evtimer_add(timer, &tv);
-        }
-        return;
+        break;
       }
 
       if (options.getsetorset) {
@@ -1077,29 +1125,9 @@ void ConnectionMulti::drive_write_machine(double now) {
       for (int i = 1; i <= 2; i++) {
         stats.log_op(op_queue_size[i]);
       }
-      next_time += iagen->generate();
-
-      if (options.skip && options.lambda > 0.0 &&
-          now - next_time > 0.005000 && (
-          op_queue_size[1] >= (size_t) options.depth || 
-          op_queue_size[2] >= (size_t) options.depth)) {
-
-        while (next_time < now - 0.004000) {
-          stats.skips++;
-          next_time += iagen->generate();
-        }
-      }
       break;
 
     case WAITING_FOR_TIME:
-      if (now < next_time) {
-        if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-          delay = next_time - now;
-          double_to_tv(delay, &tv);
-          evtimer_add(timer, &tv);
-        }
-        return;
-      }
       write_state = ISSUING;
       break;
 
@@ -1107,9 +1135,10 @@ void ConnectionMulti::drive_write_machine(double now) {
       if ( (op_queue_size[1] >= (size_t) options.depth) || 
           (op_queue_size[2] >= (size_t) options.depth) ) {
           return;
+      } else {
+        write_state = ISSUING;
+        break;
       }
-      write_state = ISSUING;
-      break;
 
     default: DIE("Not implemented");
     }
@@ -1131,11 +1160,6 @@ static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, 
   binary_header_t* h =
           reinterpret_cast<binary_header_t*>(evbuffer_pullup(input, 24));
   //assert(h);
-#ifdef DEBUGMC
-    fprintf(stderr,"handle resp from l%d - opcode: %u opaque: %u keylen: %u extralen: %u datalen: %u status: %u\n",level,
-            h->opcode,ntohl(h->opaque),ntohl(h->key_len),h->extra_len,
-            ntohl(h->body_len),ntohs(h->status));
-#endif
 
   uint32_t bl = ntohl(h->body_len);
   uint16_t kl = ntohs(h->key_len);
@@ -1149,13 +1173,18 @@ static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, 
   opcode = h->opcode;
   opaque = ntohl(h->opaque);
   uint16_t status = ntohs(h->status);
+#ifdef DEBUGMC
+    fprintf(stderr,"handle resp from l%d - opcode: %u opaque: %u keylen: %u extralen: %u datalen: %u status: %u\n",level,
+            h->opcode,ntohl(h->opaque),ntohs(h->key_len),h->extra_len,
+            ntohl(h->body_len),ntohs(h->status));
+#endif
 
 
   // If something other than success, count it as a miss
   if (opcode == CMD_GET && status == RESP_NOT_FOUND) {
       switch(level) {
           case 1:
-              //conn->stats.get_misses_l1++;
+              conn->stats.get_misses_l1++;
               break;
           case 2:
               conn->stats.get_misses_l2++;
@@ -1192,15 +1221,20 @@ static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, 
         memcpy(evict->evictedKey,buf,kl);
         buf += kl;
 
+
         evict->evictedLen = bl - kl - el;
         evict->evictedData = (char*)malloc(evict->evictedLen);
         memcpy(evict->evictedData,buf,evict->evictedLen);
         evict->evicted = true;
+        //fprintf(stderr,"class: %u, serverFlags: %u, evictedFlags: %u\n",evict->clsid,evict->serverFlags,evict->evictedFlags);
         evbuffer_drain(input,bl);
     } else {
         evbuffer_drain(input, targetLen);
     }
   } else if (opcode == CMD_TOUCH && status == RESP_NOT_FOUND) {
+    found = false;
+    evbuffer_drain(input, targetLen);
+  } else if (opcode == CMD_DELETE && status == RESP_NOT_FOUND) {
     found = false;
     evbuffer_drain(input, targetLen);
   } else {
@@ -1278,23 +1312,27 @@ void ConnectionMulti::read_callback1() {
     
 
     double now = get_time();
+    int wb = 0;
+    if (options.rand_admit) {
+        wb = (rand() % options.rand_admit);
+    }
     switch (op->type) {
         case Operation::GET:
             if (done) {
                 if ( !found && (options.getset || options.getsetorset) ) {
                     /* issue a get a l2 */
-                    string key = op->key;
+                    char key[256];
+                    memset(key,0,256);
+                    strncpy(key, op->key.c_str(),255);
                     int vl = op->valuelen;
-                    int flags = 0;
-                    SET_INCL(op->incl,flags);
-                    issue_get_with_len(key.c_str(),vl,now,false,2,flags,0,1);
-                    finish_op(op,0);
+                    int flags = OP_clu(op);
+                    issue_get_with_len(key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
+                    op->end_time = now;
+                    this->stats.log_get_l1(*op);
+                    //finish_op(op,0);
 
                 } else {
                     if (found) {
-                        if (op->incl == 1) {
-                            issue_touch(op->key.c_str(),op->valuelen,now,2);
-                        }
                         finish_op(op,1);
                     } else {
                         finish_op(op,0);
@@ -1307,29 +1345,63 @@ void ConnectionMulti::read_callback1() {
             }
             break;
         case Operation::SET:
-            if (evict->evicted) {
-                if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
-                    issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, 2, ITEM_INCL | ITEM_DIRTY, 0, 1);
-                    this->stats.incl_wbs++;
-                } else if (evict->evictedFlags & ITEM_EXCL) {
-                    issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, 2, ITEM_EXCL, 0, 1);
-                    this->stats.excl_wbs++;
-                }
-                if (((evict->serverFlags & ITEM_DIRTY) == 0) && (op->log == 1)) {
-                    //we sent a SET request to l1, the item that was set is new since it didn't not get 
-                    //marked as dirty
-                    this->stats.set_misses_l1++;
-                }
-
-                if (op->incl == 2) {
-                    //if exclusive, remove from l2
-                    //here, we sent a set to l1
-                    issue_delete(op->key.c_str(),now,2,op->log);
+            if (OP_src(op) == SRC_L1_COPY || 
+                OP_src(op) == SRC_DIRECT_SET ||  
+                OP_src(op) == SRC_L2_M ) {
+                vector<string>::iterator position = std::find(wb_keys.begin(), wb_keys.end(), op->key);
+                if (position != wb_keys.end()) {
+                    wb_keys.erase(position);
+                } else {
+                    fprintf(stderr,"expected %s, got nuthin\n",op->key.c_str());
                 }
             }
-            //if (op->incl == 1 && op->log == 1 && op->flags) {
-            //    issue_touch(op->key.c_str(),op->valuelen,0,2);
-            //}
+            if (evict->evicted) {
+                if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
+                    //strncpy(wb_key,evict->evictedKey,255);
+                    string wb_key(evict->evictedKey);
+                    wb_keys.push_back(wb_key);
+                    issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | ITEM_DIRTY | LOG_OP | SRC_WB);
+                    //fprintf(stderr,"incl writeback %s\n",evict->evictedKey);
+                    this->stats.incl_wbs++;
+                } else if (evict->evictedFlags & ITEM_EXCL) {
+                    //fprintf(stderr,"excl writeback %s\n",evict->evictedKey);
+                    //strncpy(wb_key,evict->evictedKey,255);
+                    string wb_key(evict->evictedKey);
+                    if (options.rand_admit && wb == 0) {
+                        wb_keys.push_back(wb_key);
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_EXCL | LOG_OP | SRC_WB);
+                    } else if (options.threshold && (key_hist[wb_key] >= options.threshold)) {
+                        wb_keys.push_back(wb_key);
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_EXCL | LOG_OP | SRC_WB);
+                    } else if (options.wb_all) {
+                        wb_keys.push_back(wb_key);
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_EXCL | LOG_OP | SRC_WB);
+                    }
+                    this->stats.excl_wbs++;
+                }
+                if (OP_src(op) == SRC_DIRECT_SET) {
+                    if ( (evict->serverFlags & ITEM_SIZE_CHANGE) || ((evict->serverFlags & ITEM_WAS_HIT) == 0)) {
+                        this->stats.set_misses_l1++;
+                    } else if (OP_excl(op) && evict->serverFlags & ITEM_WAS_HIT) {
+                        this->stats.set_excl_hits_l1++;
+                    } else if (OP_incl(op) && evict->serverFlags & ITEM_WAS_HIT) {
+                        this->stats.set_incl_hits_l1++;
+                    }
+                }
+            }
+            /*
+            if (OP_incl(op) && (OP_src(op) == SRC_DIRECT_SET)) {
+                char key[256];
+                memset(key,0,256);
+                strncpy(key, op->key.c_str(),255);
+                int valuelen = op->valuelen;
+                if (class_change) {
+                    int index = lrand48() % (1024 * 1024);
+                    issue_set(key, &random_char[index], valuelen, now, ITEM_L2 | ITEM_INCL | LOG_OP);
+                } else {
+                }
+            }
+            */
             finish_op(op,1);
             break;
         default: 
@@ -1427,38 +1499,36 @@ void ConnectionMulti::read_callback2() {
                 if ( !found && (options.getset || options.getsetorset) ) {//  &&
                     //(options.twitter_trace != 1)) {
                     char key[256];
-                    string keystr = op->key;
-                    strcpy(key, keystr.c_str());
+                    memset(key,0,256);
+                    strncpy(key, op->key.c_str(),255);
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
-                    int incl = op->incl;
-                    int flags = 0;
-	            SET_INCL(incl,flags);	
-                    finish_op(op,0); // sets read_state = IDLE
-                    issue_set(key, &random_char[index], valuelen, now, 1, flags, 0, 1);
+                    int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
+                    wb_keys.push_back(op->key);
+                    issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L1);
                     last_quiet1 = false; 
-                    if (incl == 1) {
-                        issue_set(key, &random_char[index], valuelen, now, 2, flags, 0, 1);
+                    if (OP_incl(op)) {
+                        wb_keys.push_back(op->key);
+                        issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L2);
                         last_quiet2 = false; 
                     }
+                    finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
                     if (found) {
                         char key[256];
-                        string keystr = op->key;
-                        strcpy(key, keystr.c_str());
+                        memset(key,0,256);
+                        strncpy(key, op->key.c_str(),255);
                         int valuelen = op->valuelen;
                         int index = lrand48() % (1024 * 1024);
-                        int incl = op->incl;
-                        int flags = 0;
-                        SET_INCL(incl,flags);
+                        int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
                         //found in l2, set in l1
-                        issue_set(key, &random_char[index],valuelen, now, 1, flags, 0, 0);
-                        //if (incl == 2) {
-                        //    //if exclusive, remove from l2
-                        //    issue_delete(key,now,2,0);
-                        //}
+                        wb_keys.push_back(op->key);
+                        issue_set(key, &random_char[index],valuelen, now, flags);
                         this->stats.copies_to_l1++;
+                        //if (OP_excl(op)) {
+                        //    issue_delete(key,now, ITEM_L2 | SRC_L1_COPY );
+                        //}
                         finish_op(op,1);
 
                     } else {
@@ -1472,29 +1542,59 @@ void ConnectionMulti::read_callback2() {
             }
             break;
         case Operation::SET:
+            if (OP_src(op) == SRC_WB || OP_src(op) == SRC_L2_M) {
+                vector<string>::iterator position = std::find(wb_keys.begin(), wb_keys.end(), op->key);
+                if (position != wb_keys.end()) {
+                    wb_keys.erase(position);
+                } else {
+                    fprintf(stderr,"expected wb %s, got nuthin\n",op->key.c_str());
+                }
+            }
             finish_op(op,1);
             break;
         case Operation::TOUCH:
-            if (!found) {
-                //char key[256];
-                //string keystr = op->key;
-                //strcpy(key, keystr.c_str());
-                //int valuelen = op->valuelen;
-                //int index = lrand48() % (1024 * 1024);
-                //int incl = op->incl;
-                //int flags = 0;
-                //SET_INCL(incl,flags);
-                //// not found in l2, set in l2
-                //issue_set(key, &random_char[index],valuelen, 0, flags, 2, 0, 1);
-                finish_op(op,0);
-            } else {
-                finish_op(op,1);
+            if (!found && (OP_src(op) == SRC_DIRECT_SET)) {
+                char key[256];
+                memset(key,0,256);
+                strncpy(key, op->key.c_str(),255);
+                int valuelen = op->valuelen;
+                int index = lrand48() % (1024 * 1024);
+                wb_keys.push_back(op->key);
+                issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP | SRC_L2_M);
+                this->stats.set_misses_l2++;
             }
+            //if (!found) {
+            //    //int incl = op->incl;
+            //    //int flags = 0;
+            //    //SET_INCL(incl,flags);
+            //    //// not found in l2, set in l2
+            //    char key[256];
+            //    memset(key,0,256);
+            //    strncpy(key, op->key.c_str(),255);
+            //    int valuelen = op->valuelen;
+            //    int index = lrand48() % (1024 * 1024);
+            //    if (OP_src(op) == SRC_DIRECT_SET) {
+            //        issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP);
+            //        this->stats.set_misses_l2++;
+            //    }
+            //    //if (OP_src(op) == SRC_L1_H) {
+            //    //    fprintf(stderr,"expected op in l2: %s\n",key);
+            //    //}
+            //    finish_op(op,0);
+            //} else {
+            //    finish_op(op,1);
+            //}
+            finish_op(op,0);
             break;
         case Operation::DELETE:
             //check to see if it was a hit
-            if (!found && op->log) {
-                this->stats.set_misses_l2++;
+            //fprintf(stderr," del %s -- %d from %d\n",op->key.c_str(),found,OP_src(op));
+            if (OP_src(op) == SRC_DIRECT_SET) {
+                if (found) {
+                    this->stats.delete_hits_l2++;
+                } else {
+                    this->stats.delete_misses_l2++;
+                }
             }
             finish_op(op,1);
             break;
@@ -1559,9 +1659,13 @@ void bev_read_cb1(struct bufferevent *bev, void *ptr) {
   conn->read_callback1();
 }
 
+
 void bev_read_cb2(struct bufferevent *bev, void *ptr) {
   ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->read_callback2();
+}
+
+void bev_write_cb_m(struct bufferevent *bev, void *ptr) {
 }
 
 void timer_cb_m(evutil_socket_t fd, short what, void *ptr) {
