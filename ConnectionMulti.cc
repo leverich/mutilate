@@ -508,9 +508,11 @@ int ConnectionMulti::issue_getsetorset(double now) {
                   }
                   int index = lrand48() % (1024 * 1024);
                   wb_keys.push_back(string(key));
-                  issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
                   if (touch == 0 && incl == 1) {
                     issue_touch(key,vl,now, ITEM_L2 | SRC_DIRECT_SET);
+                    issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
+                  } else {
+                    issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
                   }
                   last_quiet1 = false;
                   this->stats.sets++;
