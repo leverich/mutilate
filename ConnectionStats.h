@@ -49,6 +49,7 @@ class ConnectionStats {
    copies_to_l1(0),
    delete_misses_l2(0),
    delete_hits_l2(0),
+   gets_cid(40), sets_cid(40),
    set_incl_hits_l1(0),set_excl_hits_l1(0),
    window_gets(0), window_sets(0), window_accesses(0),
    window_get_misses(0), skips(0), sampling(_sampling) {}
@@ -92,6 +93,8 @@ class ConnectionStats {
   uint64_t copies_to_l1;
   uint64_t delete_misses_l2;
   uint64_t delete_hits_l2;
+  vector<uint64_t> gets_cid;
+  vector<uint64_t> sets_cid;
   uint64_t set_incl_hits_l1, set_excl_hits_l1;
   uint64_t window_gets, window_sets,  window_accesses, window_get_misses;
   uint64_t skips;
@@ -174,6 +177,10 @@ class ConnectionStats {
     op_sampler.accumulate(cs.op_sampler);
 #endif
 
+    for (int i = 0; i < 40; i++) {
+        gets_cid[i] += cs.gets_cid[i];
+        sets_cid[i] += cs.sets_cid[i];
+    }
     rx_bytes += cs.rx_bytes;
     tx_bytes += cs.tx_bytes;
     gets += cs.gets;

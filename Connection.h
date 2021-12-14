@@ -214,7 +214,10 @@ public:
   int eof;
   uint32_t get_cid();
   //void set_queue(ConcurrentQueue<string> *a_trace_queue);
-  void set_queue(queue<string> *a_trace_queue);
+  int  add_to_wb_keys(string wb_key);
+  void  del_wb_keys(string wb_key);
+  void set_g_wbkeys(unordered_map<string,int> *a_wb_keys);
+  void set_queue(queue<Operation> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
 
 private:
@@ -222,6 +225,8 @@ private:
   string hostname2;
   string port;
 
+  double o_percent;
+  int trace_queue_n;
   struct event_base *base;
   struct evdns_base *evdns;
   struct bufferevent *bev1;
@@ -279,8 +284,8 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
   pthread_mutex_t* lock;
-  //ConcurrentQueue<string> *trace_queue;
-  queue<string> *trace_queue;
+  unordered_map<string,int> *g_wb_keys;
+  queue<Operation> *trace_queue;
 
   // state machine functions / event processing
   void pop_op(Operation *op);

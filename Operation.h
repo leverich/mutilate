@@ -20,6 +20,8 @@ public:
   uint32_t opaque;
   uint32_t flags;
   uint16_t clsid;
+  uint32_t future;
+  uint32_t curr;
   string key;
   Operation *l1;
 
