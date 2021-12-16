@@ -89,7 +89,7 @@
 
 using namespace moodycamel;
 
-pthread_mutex_t cid_lock_m = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t cid_lock_m_approx = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t connids_m = 1;
 
 #define NCLASSES 40
@@ -168,7 +168,7 @@ static int get_incl(int vl, int kl) {
     }
 }
 
-void ConnectionMulti::output_op(Operation *op, int type, bool found) {
+void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
     char output[1024];
     char k[256];
     char a[256];
@@ -225,13 +225,13 @@ void ConnectionMulti::output_op(Operation *op, int type, bool found) {
 /**
  * Create a new connection to a server endpoint.
  */
-ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _evdns,
+ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname1, string _hostname2, string _port, options_t _options,
                        bool sampling, int fd1, int fd2 ) :
   start_time(0), stats(sampling), options(_options),
   hostname1(_hostname1), hostname2(_hostname2), port(_port), base(_base), evdns(_evdns)
 {
-  pthread_mutex_lock(&cid_lock_m);
+  pthread_mutex_lock(&cid_lock_m_approx);
   cid = connids_m++;
   if (cid == 1) {
     cid_rate.push_back(100);
@@ -242,7 +242,7 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
     cid_rate.push_back(0);
   }
   
-  pthread_mutex_unlock(&cid_lock_m);
+  pthread_mutex_unlock(&cid_lock_m_approx);
   
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
@@ -267,8 +267,9 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
   last_quiet2 = false;
   
   last_tx = last_rx = 0.0;
+  gets = 0;
+  gloc = rand() % (1000*2-1)+1;
 
-  
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   op_queue = (Operation***)malloc(sizeof(Operation**)*(LEVELS+1));
@@ -282,37 +283,37 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
   }
   
   bev1 = bufferevent_socket_new(base, fd1, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev1, bev_read_cb1, bev_write_cb_m, bev_event_cb1, this);
+  bufferevent_setcb(bev1, bev_read_cb1_approx, bev_write_cb_m_approx, bev_event_cb1_approx, this);
   bufferevent_enable(bev1, EV_READ | EV_WRITE);
   
   bev2 = bufferevent_socket_new(base, fd2, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev2, bev_read_cb2, bev_write_cb_m, bev_event_cb2, this);
+  bufferevent_setcb(bev2, bev_read_cb2_approx, bev_write_cb_m_approx, bev_event_cb2_approx, this);
   bufferevent_enable(bev2, EV_READ | EV_WRITE);
   
-  timer = evtimer_new(base, timer_cb_m, this);
+  timer = evtimer_new(base, timer_cb_m_approx, this);
 
   read_state  = IDLE;
 }
 
 
-void ConnectionMulti::set_queue(queue<Operation>* a_trace_queue) {
+void ConnectionMultiApprox::set_queue(queue<Operation>* a_trace_queue) {
     trace_queue = a_trace_queue;
     trace_queue_n = a_trace_queue->size();
 }
 
-void ConnectionMulti::set_lock(pthread_mutex_t* a_lock) {
+void ConnectionMultiApprox::set_lock(pthread_mutex_t* a_lock) {
     lock = a_lock;
 }
 
-void ConnectionMulti::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
+void ConnectionMultiApprox::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
     g_wb_keys = a_wb_keys;
 }
 
-uint32_t ConnectionMulti::get_cid() {
+uint32_t ConnectionMultiApprox::get_cid() {
     return cid;
 }
 
-int ConnectionMulti::add_to_wb_keys(string key) {
+int ConnectionMultiApprox::add_to_wb_keys(string key) {
     int ret = -1;
     pthread_mutex_lock(lock);
     auto pos = g_wb_keys->find(key);
@@ -332,7 +333,7 @@ int ConnectionMulti::add_to_wb_keys(string key) {
     return ret;
 }
 
-void ConnectionMulti::del_wb_keys(string key) {
+void ConnectionMultiApprox::del_wb_keys(string key) {
 
     pthread_mutex_lock(lock);
     auto position = g_wb_keys->find(key);
@@ -345,7 +346,7 @@ void ConnectionMulti::del_wb_keys(string key) {
 }
 
 
-int ConnectionMulti::do_connect() {
+int ConnectionMultiApprox::do_connect() {
 
   int connected = 0;
   if (options.unix_socket) {
@@ -390,7 +391,7 @@ int ConnectionMulti::do_connect() {
 /**
  * Destroy a connection, performing cleanup.
  */
-ConnectionMulti::~ConnectionMulti() {
+ConnectionMultiApprox::~ConnectionMultiApprox() {
  
 
   for (int i = 0; i <= LEVELS; i++) {
@@ -416,7 +417,7 @@ ConnectionMulti::~ConnectionMulti() {
 /**
  * Reset the connection back to an initial, fresh state.
  */
-void ConnectionMulti::reset() {
+void ConnectionMultiApprox::reset() {
   // FIXME: Actually check the connection, drain all bufferevents, drain op_q.
   //assert(op_queue.size() == 0);
   //evtimer_del(timer);
@@ -428,7 +429,7 @@ void ConnectionMulti::reset() {
 /**
  * Set our event processing priority.
  */
-void ConnectionMulti::set_priority(int pri) {
+void ConnectionMultiApprox::set_priority(int pri) {
   if (bufferevent_priority_set(bev1, pri)) {
     DIE("bufferevent_set_priority(bev, %d) failed", pri);
   }
@@ -441,7 +442,7 @@ void ConnectionMulti::set_priority(int pri) {
  * If a GET command: Issue a get first, if not found then set
  * If trace file (or prob. write) says to set, then set it
  */
-int ConnectionMulti::issue_getsetorset(double now) {
+int ConnectionMultiApprox::issue_getsetorset(double now) {
  
 
     
@@ -535,7 +536,6 @@ int ConnectionMulti::issue_getsetorset(double now) {
         int incl = get_incl(vl,strlen(key));
         int cid = get_class(vl,strlen(key));
         int flags = 0;
-        int touch = (rand() % 100);
         int index = lrand48() % (1024 * 1024);
         //int touch = 1;
         SET_INCL(incl,flags);
@@ -554,11 +554,9 @@ int ConnectionMulti::issue_getsetorset(double now) {
                 }
               }
               issued = issue_get_with_len(key, vl, now, false, flags | LOG_OP | ITEM_L1);
-              if (touch == 1 && incl == 1) {
-                issue_touch(key,vl,now, ITEM_L2 | SRC_L1_H);
-              }
               last_quiet1 = false;
               this->stats.gets++;
+              gets++;
               this->stats.gets_cid[cid]++;
 
               break;
@@ -567,11 +565,10 @@ int ConnectionMulti::issue_getsetorset(double now) {
                   issue_noop(now,1);
               }
               if (incl == 1) {
-                issue_touch(key,vl,now, ITEM_L2 | SRC_DIRECT_SET);
+                issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
               } else if (incl == 2) {
-                issue_delete(key,now, ITEM_L2 | SRC_DIRECT_SET );
+                issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
               }
-              issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
               last_quiet1 = false;
               this->stats.sets++;
               this->stats.sets_cid[cid]++;
@@ -593,7 +590,6 @@ int ConnectionMulti::issue_getsetorset(double now) {
     } else {
         return 1;
     }
-    //}
     if (last_quiet1) {
         issue_noop(now,1);
         last_quiet1 = false;
@@ -606,7 +602,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
 /**
  * Issue a get request to the server.
  */
-int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1) {
+int ConnectionMultiApprox::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1) {
 
   struct evbuffer *output = NULL;
   int level = 0;
@@ -682,7 +678,7 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
 /**
  * Issue a get request to the server.
  */
-int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int flags) {
+int ConnectionMultiApprox::issue_touch(const char* key, int valuelen, double now, int flags) {
   struct evbuffer *output = NULL;
   int level = 0;
   switch (FLAGS_level(flags)) {
@@ -756,7 +752,7 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
 /**
  * Issue a delete request to the server.
  */
-int ConnectionMulti::issue_delete(const char* key, double now, uint32_t flags) {
+int ConnectionMultiApprox::issue_delete(const char* key, double now, uint32_t flags) {
   struct evbuffer *output = NULL;
   int level = 0;
   switch (FLAGS_level(flags)) {
@@ -821,7 +817,7 @@ int ConnectionMulti::issue_delete(const char* key, double now, uint32_t flags) {
   return 1;
 }
 
-void ConnectionMulti::issue_noop(double now, int level) {
+void ConnectionMultiApprox::issue_noop(double now, int level) {
    struct evbuffer *output = NULL;
    switch (level) {
        case 1:
@@ -847,7 +843,7 @@ void ConnectionMulti::issue_noop(double now, int level) {
 /**
  * Issue a set request to the server.
  */
-int ConnectionMulti::issue_set(const char* key, const char* value, int length, double now, uint32_t flags) {
+int ConnectionMultiApprox::issue_set(const char* key, const char* value, int length, double now, uint32_t flags) {
   
   struct evbuffer *output = NULL;
   int level = 0;
@@ -913,7 +909,7 @@ int ConnectionMulti::issue_set(const char* key, const char* value, int length, d
 /**
  * Return the oldest live operation in progress.
  */
-void ConnectionMulti::pop_op(Operation *op) {
+void ConnectionMultiApprox::pop_op(Operation *op) {
 
   uint8_t level = OP_level(op);
   //op_queue[level].erase(op);
@@ -939,7 +935,7 @@ void ConnectionMulti::pop_op(Operation *op) {
  * Finish up (record stats) an operation that just returned from the
  * server.
  */
-void ConnectionMulti::finish_op(Operation *op, int was_hit) {
+void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
   double now;
 #if USE_CACHED_TIME
   struct timeval now_tv;
@@ -1043,7 +1039,7 @@ void ConnectionMulti::finish_op(Operation *op, int was_hit) {
 /**
  * Check if our testing is done and we should exit.
  */
-bool ConnectionMulti::check_exit_condition(double now) {
+bool ConnectionMultiApprox::check_exit_condition(double now) {
   if (eof && op_queue_size[1] == 0 && op_queue_size[2] == 0) {
       return true;
   }
@@ -1055,7 +1051,7 @@ bool ConnectionMulti::check_exit_condition(double now) {
 /**
  * Handle new connection and error events.
  */
-void ConnectionMulti::event_callback1(short events) {
+void ConnectionMultiApprox::event_callback1(short events) {
   if (events & BEV_EVENT_CONNECTED) {
     D("Connected to %s:%s.", hostname1.c_str(), port.c_str());
     int fd = bufferevent_getfd(bev1);
@@ -1090,7 +1086,7 @@ void ConnectionMulti::event_callback1(short events) {
 /**
  * Handle new connection and error events.
  */
-void ConnectionMulti::event_callback2(short events) {
+void ConnectionMultiApprox::event_callback2(short events) {
   if (events & BEV_EVENT_CONNECTED) {
     D("Connected to %s:%s.", hostname2.c_str(), port.c_str());
     int fd = bufferevent_getfd(bev2);
@@ -1129,7 +1125,7 @@ void ConnectionMulti::event_callback2(short events) {
  *
  * Note that this function loops. Be wary of break vs. return.
  */
-void ConnectionMulti::drive_write_machine(double now) {
+void ConnectionMultiApprox::drive_write_machine(double now) {
   if (now == 0.0) now = get_time();
 
   double delay;
@@ -1197,7 +1193,7 @@ void ConnectionMulti::drive_write_machine(double now) {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque, evicted_t *evict, int level) {
+static bool handle_response(ConnectionMultiApprox *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque, evicted_t *evict, int level) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -1294,7 +1290,7 @@ static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, 
 /**
  * Handle incoming data (responses).
  */
-void ConnectionMulti::read_callback1() {
+void ConnectionMultiApprox::read_callback1() {
   struct evbuffer *input = bufferevent_get_input(bev1);
 
   Operation *op = NULL;
@@ -1364,12 +1360,14 @@ void ConnectionMulti::read_callback1() {
     switch (op->type) {
         case Operation::GET:
             if (done) {
+                char key[256];
+                memset(key,0,256);
+                strncpy(key, op->key.c_str(),255);
+                //int touch = (rand() % 100);
+
+                int vl = op->valuelen;
                 if ( !found && (options.getset || options.getsetorset) ) {
                     /* issue a get a l2 */
-                    char key[256];
-                    memset(key,0,256);
-                    strncpy(key, op->key.c_str(),255);
-                    int vl = op->valuelen;
                     int flags = OP_clu(op);
                     issue_get_with_len(key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
                     op->end_time = now;
@@ -1377,6 +1375,10 @@ void ConnectionMulti::read_callback1() {
                     //finish_op(op,0);
 
                 } else {
+                    if (OP_incl(op) && gets == gloc) {
+                        issue_touch(key,vl,now, ITEM_L2 | SRC_L1_H);
+                        gloc += rand()%(1000*2-1)+1;
+                    }
                     del_wb_keys(op->key);
                     finish_op(op,found);
                 }
@@ -1482,7 +1484,7 @@ void ConnectionMulti::read_callback1() {
 /**
  * Handle incoming data (responses).
  */
-void ConnectionMulti::read_callback2() {
+void ConnectionMultiApprox::read_callback2() {
   struct evbuffer *input = bufferevent_get_input(bev2);
 
   Operation *op = NULL;
@@ -1572,7 +1574,7 @@ void ConnectionMulti::read_callback2() {
                         //wb_keys.push_back(op->key);
                         issue_set(key, &random_char[index],valuelen, now, flags);
                         this->stats.copies_to_l1++;
-                        //if (OP_excl(op)) {
+                        //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?
                         //    issue_delete(key,now, ITEM_L2 | SRC_L1_COPY );
                         //}
                         finish_op(op,1);
@@ -1594,43 +1596,6 @@ void ConnectionMulti::read_callback2() {
             finish_op(op,1);
             break;
         case Operation::TOUCH:
-            if (OP_src(op) == SRC_DIRECT_SET) {
-                char key[256];
-                memset(key,0,256);
-                strncpy(key, op->key.c_str(),255);
-                int valuelen = op->valuelen;
-                if (!found) {
-                    int index = lrand48() % (1024 * 1024);
-                    //int ret = add_to_wb_keys(op->key+"l2");
-                    //if (ret == 1) {
-                    issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP | SRC_L2_M);
-                    //}
-                    this->stats.set_misses_l2++;
-                } else {
-                    issue_touch(key,valuelen,now, ITEM_L1 | SRC_L2_H | ITEM_DIRTY);
-                }
-            }
-            //if (!found) {
-            //    //int incl = op->incl;
-            //    //int flags = 0;
-            //    //SET_INCL(incl,flags);
-            //    //// not found in l2, set in l2
-            //    char key[256];
-            //    memset(key,0,256);
-            //    strncpy(key, op->key.c_str(),255);
-            //    int valuelen = op->valuelen;
-            //    int index = lrand48() % (1024 * 1024);
-            //    if (OP_src(op) == SRC_DIRECT_SET) {
-            //        issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP);
-            //        this->stats.set_misses_l2++;
-            //    }
-            //    //if (OP_src(op) == SRC_L1_H) {
-            //    //    fprintf(stderr,"expected op in l2: %s\n",key);
-            //    //}
-            //    finish_op(op,0);
-            //} else {
-            //    finish_op(op,1);
-            //}
             finish_op(op,0);
             break;
         case Operation::DELETE:
@@ -1674,7 +1639,7 @@ void ConnectionMulti::read_callback2() {
 /**
  * Callback called when write requests finish.
  */
-void ConnectionMulti::write_callback() {
+void ConnectionMultiApprox::write_callback() {
 
     //fprintf(stderr,"loaded evbuffer with ops: %u\n",op_queue.size());
 }
@@ -1682,42 +1647,42 @@ void ConnectionMulti::write_callback() {
 /**
  * Callback for timer timeouts.
  */
-void ConnectionMulti::timer_callback() {
+void ConnectionMultiApprox::timer_callback() {
   //fprintf(stderr,"timer up: %d\n",cid);
   drive_write_machine();
 }
 
 
 /* The follow are C trampolines for libevent callbacks. */
-void bev_event_cb1(struct bufferevent *bev, short events, void *ptr) {
+void bev_event_cb1_approx(struct bufferevent *bev, short events, void *ptr) {
 
-  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
   conn->event_callback1(events);
 }
 
 /* The follow are C trampolines for libevent callbacks. */
-void bev_event_cb2(struct bufferevent *bev, short events, void *ptr) {
+void bev_event_cb2_approx(struct bufferevent *bev, short events, void *ptr) {
 
-  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
   conn->event_callback2(events);
 }
 
-void bev_read_cb1(struct bufferevent *bev, void *ptr) {
-  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+void bev_read_cb1_approx(struct bufferevent *bev, void *ptr) {
+  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
   conn->read_callback1();
 }
 
 
-void bev_read_cb2(struct bufferevent *bev, void *ptr) {
-  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+void bev_read_cb2_approx(struct bufferevent *bev, void *ptr) {
+  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
   conn->read_callback2();
 }
 
-void bev_write_cb_m(struct bufferevent *bev, void *ptr) {
+void bev_write_cb_m_approx(struct bufferevent *bev, void *ptr) {
 }
 
-void timer_cb_m(evutil_socket_t fd, short what, void *ptr) {
-  ConnectionMulti* conn = (ConnectionMulti*) ptr;
+void timer_cb_m_approx(evutil_socket_t fd, short what, void *ptr) {
+  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
   conn->timer_callback();
 }
 

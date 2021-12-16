@@ -503,7 +503,7 @@ bool ProtocolBinary::setup_connection_w() {
   string user = string(opts.username);
   string pass = string(opts.password);
 
-  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, {0}, 0, 0, 0};
+  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, 0, 0, 0, 0};
   header.key_len = htons(5);
   header.body_len = htonl(6 + user.length() + 1 + pass.length());
 
@@ -538,7 +538,7 @@ int ProtocolBinary::get_request(const char* key, uint32_t opaque) {
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_GET, htons(keylen),
-                        0x00, 0x00, {htons(0)},
+                        0x00, 0x00, htons(0),
                         htonl(keylen) };
   h.opaque = htonl(opaque);
 
@@ -561,7 +561,7 @@ int ProtocolBinary::set_request(const char* key, const char* value, int len, uin
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, {htons(0)},
+                        0x08, 0x00, htons(0),
                         htonl(keylen + 8 + len) };
   h.opaque = htonl(opaque);
   //bufferevent_write(bev, &h, 32); // With extras

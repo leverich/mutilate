@@ -700,7 +700,7 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now, bo
 
     // each line is 4-bytes
     binary_header_t h = { 0x80, CMD_GET, htons(keylen),
-                          0x00, 0x00, {htons(0)},
+                          0x00, 0x00, htons(0),
                           htonl(keylen) };
 
     if (quiet) {
@@ -874,7 +874,7 @@ void Connection::issue_noop(double now) {
     //op_queue[op.opaque] = op;
     //op_queue_size++;
     binary_header_t h = { 0x80, CMD_NOOP, 0x0000,
-                          0x00, 0x00, {htons(0)},
+                          0x00, 0x00, htons(0),
                           0x00 };
     //h.opaque = htonl(op.opaque);
 
@@ -926,7 +926,7 @@ int Connection::issue_set(const char* key, const char* value, int length,
 
     // each line is 4-bytes
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                          0x08, 0x00, {htons(0)},
+                          0x08, 0x00, htons(0),
                           htonl(keylen + 8 + length) }; 
     h.opaque = htonl(op.opaque);
     
