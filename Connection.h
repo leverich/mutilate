@@ -223,7 +223,7 @@ public:
   int  add_to_wb_keys(string wb_key);
   void  del_wb_keys(string wb_key);
   void set_g_wbkeys(unordered_map<string,int> *a_wb_keys);
-  void set_queue(queue<Operation> *a_trace_queue);
+  void set_queue(queue<Operation*> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
 
 private:
@@ -291,7 +291,7 @@ private:
   Generator *iagen;
   pthread_mutex_t* lock;
   unordered_map<string,int> *g_wb_keys;
-  queue<Operation> *trace_queue;
+  queue<Operation*> *trace_queue;
 
   // state machine functions / event processing
   void pop_op(Operation *op);
@@ -363,7 +363,7 @@ public:
   int  add_to_wb_keys(string wb_key);
   void  del_wb_keys(string wb_key);
   void set_g_wbkeys(unordered_map<string,int> *a_wb_keys);
-  void set_queue(queue<Operation> *a_trace_queue);
+  void set_queue(queue<Operation*> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
 
 private:
@@ -420,12 +420,12 @@ private:
   uint32_t cid;
   uint32_t gets;
   uint32_t gloc;
+  uint32_t ghits;
   
   //std::vector<std::queue<Operation>> op_queue;
   Operation ***op_queue;
   uint32_t *op_queue_size;
 
-  map<string,int> key_hist;
 
   Generator *valuesize;
   Generator *keysize;
@@ -433,7 +433,7 @@ private:
   Generator *iagen;
   pthread_mutex_t* lock;
   unordered_map<string,int> *g_wb_keys;
-  queue<Operation> *trace_queue;
+  queue<Operation*> *trace_queue;
 
   // state machine functions / event processing
   void pop_op(Operation *op);

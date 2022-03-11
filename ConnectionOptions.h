@@ -6,6 +6,7 @@
 typedef struct {
   int apps;
   int rand_admit;
+  bool ratelimit;
   int threshold;
   int wb_all;
   bool miss_through;

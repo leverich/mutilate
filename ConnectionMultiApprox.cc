@@ -110,7 +110,7 @@ typedef struct _evicted_type {
 } evicted_t;
 
 static vector<double> cid_rate;
-
+extern map<string,int> g_key_hist;
 extern int max_n[3];
 
 static void init_inclusives(char *inclusive_str) {
@@ -176,7 +176,7 @@ void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
     memset(k,0,256);
     memset(a,0,256);
     memset(s,0,256);
-    strcpy(k,op->key.c_str());
+    strncpy(k,op->key,255);
     switch (type) {
         case 0: //get
             sprintf(a,"issue_get");
@@ -268,7 +268,8 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   
   last_tx = last_rx = 0.0;
   gets = 0;
-  gloc = rand() % (1000*2-1)+1;
+  ghits = 0;
+  gloc = rand() % (100*2-1)+1;
 
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
@@ -296,7 +297,7 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
 }
 
 
-void ConnectionMultiApprox::set_queue(queue<Operation>* a_trace_queue) {
+void ConnectionMultiApprox::set_queue(queue<Operation*>* a_trace_queue) {
     trace_queue = a_trace_queue;
     trace_queue_n = a_trace_queue->size();
 }
@@ -448,147 +449,134 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
     
     int ret = 0;
     int nissued = 0;
-    //while (nissued < options.depth) {
+    while (nissued < 2) {
     
     //pthread_mutex_lock(lock);
-    if (!trace_queue->empty()) {
-        Operation Op = trace_queue->front();
-        if (Op.type == Operation::SASL) {
-            eof = 1;
-            cid_rate[cid] = 100;
-            fprintf(stderr,"cid %d done\n",cid);
-            string op_queue1;
-            string op_queue2;
-            for (int j = 0; j < 2; j++) {
-                for (int i = 0; i < OPAQUE_MAX; i++) {
-                    if (op_queue[j+1][i] != NULL) {
-                        if (j == 0) {
-                            op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
-                        } else {
-                            op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
+        if (!trace_queue->empty()) {
+            Operation Op = *(trace_queue->front());
+            if (Op.type == Operation::SASL) {
+                eof = 1;
+                cid_rate[cid] = 100;
+                fprintf(stderr,"cid %d done\n",cid);
+                string op_queue1;
+                string op_queue2;
+                for (int j = 0; j < 2; j++) {
+                    for (int i = 0; i < OPAQUE_MAX; i++) {
+                        if (op_queue[j+1][i] != NULL) {
+                            if (j == 0) {
+                                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
+                            } else {
+                                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
+                            }
                         }
                     }
                 }
-            }
-            fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
-            return 1;
-        } 
-        
+                fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
+                return 1;
+            } 
+            
 
-        /* check if in global wb queue */
-        pthread_mutex_lock(lock);
-        double percent = (double)total/((double)trace_queue_n) * 100;
-        if (percent > o_percent+1) {
-            //update the percentage table and see if we should execute
-            std::vector<double>::iterator mp = std::min_element(cid_rate.begin(), cid_rate.end());
-            double min_percent = *mp;
+            /* check if in global wb queue */
+            double percent = (double)total/((double)trace_queue_n) * 100;
+            if (percent > o_percent+1) {
+                //update the percentage table and see if we should execute
+                std::vector<double>::iterator mp = std::min_element(cid_rate.begin(), cid_rate.end());
+                double min_percent = *mp;
 
-            if (percent > min_percent+2) {
-                pthread_mutex_unlock(lock);
-                struct timeval tv;
-                tv.tv_sec = 1;
-                tv.tv_usec = 0;
-                int good = 0;
-                if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                    good = evtimer_add(timer, &tv);
+                if (options.ratelimit && percent > min_percent+2) {
+                    struct timeval tv;
+                    tv.tv_sec = 1;
+                    tv.tv_usec = 0;
+                    int good = 0;
+                    if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+                        good = evtimer_add(timer, &tv);
+                    }
+                    if (good != 0) {
+                        fprintf(stderr,"eventimer is messed up!\n");
+                        return 2;
+                    }
+                    return 1;
                 }
+                cid_rate[cid] = percent;
+                //fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
+                o_percent = percent;
+            }
+            auto check = g_wb_keys->find(string(Op.key));
+            if (check != g_wb_keys->end()) {
+                struct timeval tv;
+                double delay; 
+                delay = last_rx + 0.00025 - now;
+                double_to_tv(delay,&tv);
+                int good = 0;
+                //if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+                good = evtimer_add(timer, &tv);
+                //}
                 if (good != 0) {
-                    fprintf(stderr,"eventimer is messed up!\n");
+                    fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op.key);
                     return 2;
                 }
                 return 1;
             }
-            cid_rate[cid] = percent;
-            fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
-            o_percent = percent;
-        }
-        auto check = g_wb_keys->find(Op.key);
-        if (check != g_wb_keys->end()) {
-            pthread_mutex_unlock(lock);
-            struct timeval tv;
-            tv.tv_sec = 1;
-            tv.tv_usec = 0;
-            int good = 0;
-            if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                good = evtimer_add(timer, &tv);
+
+            
+            char *key = Op.key;
+            int vl = Op.valuelen;
+
+            trace_queue->pop();
+
+            int issued = 0;
+            int incl = get_incl(vl,strlen(key));
+            int cid = get_class(vl,strlen(key));
+            int flags = 0;
+            int index = lrand48() % (1024 * 1024);
+            //int touch = 1;
+            SET_INCL(incl,flags);
+            
+            switch(Op.type)
+            {
+              case Operation::GET:
+                  //if (nissued < options.depth-1) {
+                  //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
+                  //  last_quiet1 = false;
+                  //} else {
+                  //}
+                  issued = issue_get_with_len(key, vl, now, false, flags | LOG_OP | ITEM_L1);
+                  last_quiet1 = false;
+                  this->stats.gets++;
+                  gets++;
+                  this->stats.gets_cid[cid]++;
+
+                  break;
+            case Operation::SET:
+                  if (last_quiet1) {
+                      issue_noop(now,1);
+                  }
+                  if (incl == 1) {
+                    issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
+                  } else if (incl == 2) {
+                    issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
+                  }
+                  last_quiet1 = false;
+                  this->stats.sets++;
+                  this->stats.sets_cid[cid]++;
+                  break;
+            case Operation::DELETE:
+            case Operation::TOUCH:
+            case Operation::NOOP:
+            case Operation::SASL:
+                  fprintf(stderr,"invalid line: %s, vl: %d\n",key,vl);
+                  break;
+            
             }
-            if (good != 0) {
-                fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op.key.c_str());
-                return 2;
+            if (issued) {
+                nissued++;
+                total++;
+            } else {
+                fprintf(stderr,"failed to issue line: %s, vl: %d @T: XX \n",key,vl);
             }
+        } else {
             return 1;
-        } else {
-            g_wb_keys->insert( {Op.key, cid} );
-            //g_wb_keys->insert( {Op.key+"l2", cid} );
         }
-        pthread_mutex_unlock(lock);
-
-        
-        
-        char key[256];
-        memset(key,0,256);
-        strncpy(key, Op.key.c_str(),255);
-        int vl = Op.valuelen;
-
-        trace_queue->pop();
-
-        int issued = 0;
-        int incl = get_incl(vl,strlen(key));
-        int cid = get_class(vl,strlen(key));
-        int flags = 0;
-        int index = lrand48() % (1024 * 1024);
-        //int touch = 1;
-        SET_INCL(incl,flags);
-        
-        switch(Op.type)
-        {
-          case Operation::GET:
-              //if (nissued < options.depth-1) {
-              //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
-              //  last_quiet1 = false;
-              //} else {
-              //}
-              if (options.threshold > 0) {
-                if (Op.future) {
-                    key_hist[key] = 1;
-                }
-              }
-              issued = issue_get_with_len(key, vl, now, false, flags | LOG_OP | ITEM_L1);
-              last_quiet1 = false;
-              this->stats.gets++;
-              gets++;
-              this->stats.gets_cid[cid]++;
-
-              break;
-        case Operation::SET:
-              if (last_quiet1) {
-                  issue_noop(now,1);
-              }
-              if (incl == 1) {
-                issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
-              } else if (incl == 2) {
-                issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
-              }
-              last_quiet1 = false;
-              this->stats.sets++;
-              this->stats.sets_cid[cid]++;
-              break;
-        case Operation::DELETE:
-        case Operation::TOUCH:
-        case Operation::NOOP:
-        case Operation::SASL:
-              fprintf(stderr,"invalid line: %s, vl: %d\n",key,vl);
-              break;
-        
-        }
-        if (issued) {
-            nissued++;
-            total++;
-        } else {
-            fprintf(stderr,"failed to issue line: %s, vl: %d @T: XX \n",key,vl);
-        }
-    } else {
-        return 1;
     }
     if (last_quiet1) {
         issue_noop(now,1);
@@ -635,7 +623,7 @@ int ConnectionMultiApprox::issue_get_with_len(const char* key, int valuelen, dou
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->valuelen = valuelen;
   pop->type = Operation::GET;
   pop->opaque = opaque[level]++;
@@ -709,7 +697,7 @@ int ConnectionMultiApprox::issue_touch(const char* key, int valuelen, double now
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->valuelen = valuelen;
   pop->type = Operation::TOUCH;
   pop->opaque = opaque[level]++;
@@ -784,7 +772,7 @@ int ConnectionMultiApprox::issue_delete(const char* key, double now, uint32_t fl
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->type = Operation::DELETE;
   pop->opaque = opaque[level]++;
   pop->flags = flags;
@@ -867,8 +855,7 @@ int ConnectionMultiApprox::issue_set(const char* key, const char* value, int len
   else pop->start_time = now;
 #endif
 
-  
-  pop->key = string(key);
+  strncpy(pop->key,key,255); 
   pop->valuelen = length;
   pop->type = Operation::SET;
   pop->opaque = opaque[level]++;
@@ -950,7 +937,7 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
   op->end_time = now;
 #endif
 
-  if (options.successful_queries && was_hit) { 
+  if (was_hit) { 
     switch (op->type) {
     case Operation::GET: 
         switch (OP_level(op)) {
@@ -959,6 +946,10 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
                 break;
             case 2:
                 stats.log_get_l2(*op);
+                if (op->l1 != NULL) {
+                    op->l1->end_time = now;
+                    stats.log_get(*(op->l1));
+                }
                 break;
         }
         break;
@@ -976,54 +967,57 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
     case Operation::TOUCH: break;
     default: DIE("Not implemented.");
     }
-  } else {
-    switch (op->type) {
-    case Operation::GET: 
-        if (OP_log(op)) {
-            switch (OP_level(op)) {
-                case 1:
-                    stats.log_get_l1(*op);
-                    break;
-                case 2:
-                    stats.log_get_l2(*op);
-                    if (op->l1 != NULL) {
-                        op->l1->end_time = now;
-                        stats.log_get(*(op->l1));
-                    }
-                    break;
-            }
-        }
-        break;
-    case Operation::SET:
-        if (OP_log(op)) {
-            switch (OP_level(op)) {
-                case 1:
-                    stats.log_set_l1(*op);
-                    break;
-                case 2:
-                    stats.log_set_l2(*op);
-                    break;
-            }
-        }
-        break;
-    case Operation::DELETE: break;
-    case Operation::TOUCH: break;
-    default: DIE("Not implemented.");
-    }
   }
+  //} else {
+  //  switch (op->type) {
+  //  case Operation::GET: 
+  //      if (OP_log(op)) {
+  //          switch (OP_level(op)) {
+  //              case 1:
+  //                  stats.log_get_l1(*op);
+  //                  break;
+  //              case 2:
+  //                  stats.log_get_l2(*op);
+  //                  if (op->l1 != NULL) {
+  //                      op->l1->end_time = now;
+  //                      stats.log_get(*(op->l1));
+  //                  }
+  //                  break;
+  //          }
+  //      }
+  //      break;
+  //  case Operation::SET:
+  //      if (OP_log(op)) {
+  //          switch (OP_level(op)) {
+  //              case 1:
+  //                  stats.log_set_l1(*op);
+  //                  break;
+  //              case 2:
+  //                  stats.log_set_l2(*op);
+  //                  break;
+  //          }
+  //      }
+  //      break;
+  //  case Operation::DELETE: break;
+  //  case Operation::TOUCH: break;
+  //  default: DIE("Not implemented.");
+  //  }
+  //}
 
   last_rx = now;
   uint8_t level = OP_level(op);
   if (op->l1 != NULL) {
-      delete op_queue[1][op->l1->opaque];
+      //delete op_queue[1][op->l1->opaque];
       op_queue[1][op->l1->opaque] = 0;
       op_queue_size[1]--;
+      delete op->l1;
   }
   //op_queue[level].erase(op_queue[level].begin()+opopq);
   if (op == op_queue[level][op->opaque] && 
           op->opaque == op_queue[level][op->opaque]->opaque) {
-    delete op_queue[level][op->opaque];
+    //delete op_queue[level][op->opaque];
     op_queue[level][op->opaque] = 0;
+    delete op;
   } else {
       fprintf(stderr,"op_queue out of sync! Expected %p, got %p, opa1: %d opaq2: %d\n",
               op,op_queue[level][op->opaque],op->opaque,op_queue[level][op->opaque]->opaque);
@@ -1331,10 +1325,10 @@ void ConnectionMultiApprox::read_callback1() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (op->key.length() < 1) {
+        if (strlen(op->key) < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key.c_str());
+            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key);
             write(2,out2,strlen(out2));
 #endif
             if (evict->evictedKey) free(evict->evictedKey);
@@ -1360,27 +1354,24 @@ void ConnectionMultiApprox::read_callback1() {
     switch (op->type) {
         case Operation::GET:
             if (done) {
-                char key[256];
-                memset(key,0,256);
-                strncpy(key, op->key.c_str(),255);
-                //int touch = (rand() % 100);
 
                 int vl = op->valuelen;
                 if ( !found && (options.getset || options.getsetorset) ) {
                     /* issue a get a l2 */
                     int flags = OP_clu(op);
-                    issue_get_with_len(key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
+                    issue_get_with_len(op->key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
                     op->end_time = now;
                     this->stats.log_get_l1(*op);
                     //finish_op(op,0);
 
                 } else {
-                    if (OP_incl(op) && gets == gloc) {
-                        issue_touch(key,vl,now, ITEM_L2 | SRC_L1_H);
-                        gloc += rand()%(1000*2-1)+1;
+                    if (OP_incl(op) && ghits >= gloc) {
+                        issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
+                        gloc += rand()%(100*2-1)+1;
                     }
-                    del_wb_keys(op->key);
-                    finish_op(op,found);
+                    ghits++;
+                    //del_wb_keys(op->key);
+                    finish_op(op,1);
                 }
             } else {
                 char out[128];
@@ -1396,18 +1387,16 @@ void ConnectionMultiApprox::read_callback1() {
             if (evict->evicted) {
                 string wb_key(evict->evictedKey);
                 if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
-                    //wb_keys.push_back(wb_key);
                     int ret = add_to_wb_keys(wb_key);
                     if (ret == 1) {
-                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB);
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB | ITEM_DIRTY);
                     }
-                    //fprintf(stderr,"incl writeback %s\n",evict->evictedKey);
                     this->stats.incl_wbs++;
                 } else if (evict->evictedFlags & ITEM_EXCL) {
                     //fprintf(stderr,"excl writeback %s\n",evict->evictedKey);
                     //strncpy(wb_key,evict->evictedKey,255);
                     if ( (options.rand_admit && wb == 0) ||
-                         (options.threshold && (key_hist[wb_key] == 1)) ||
+                         (options.threshold && (g_key_hist[wb_key] == 1)) ||
                          (options.wb_all) ) {
                         int ret = add_to_wb_keys(wb_key);
                         if (ret == 1) {
@@ -1439,14 +1428,14 @@ void ConnectionMultiApprox::read_callback1() {
                     }
                 }
             }
-            del_wb_keys(op->key);
+            //del_wb_keys(op->key);
             finish_op(op,1);
             break;
         case Operation::TOUCH:
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
             DIE("not implemented");
     }
 
@@ -1520,10 +1509,10 @@ void ConnectionMultiApprox::read_callback2() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (op->key.length() < 1) {
+        if (strlen(op->key) < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key.c_str());
+            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key);
             write(2,out2,strlen(out2));
 #endif
             continue;
@@ -1539,18 +1528,15 @@ void ConnectionMultiApprox::read_callback2() {
             if (done) {
                 if ( !found && (options.getset || options.getsetorset) ) {//  &&
                     //(options.twitter_trace != 1)) {
-                    char key[256];
-                    memset(key,0,256);
-                    strncpy(key, op->key.c_str(),255);
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
-                    issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L1);
+                    issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
                     //wb_keys.push_back(op->key);
                     last_quiet1 = false; 
                     if (OP_incl(op)) {
                         //wb_keys.push_back(op->key);
-                        issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L2);
+                        issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
                         last_quiet2 = false; 
                     }
                     //pthread_mutex_lock(lock);
@@ -1564,18 +1550,16 @@ void ConnectionMultiApprox::read_callback2() {
                     
                 } else {
                     if (found) {
-                        char key[256];
-                        memset(key,0,256);
-                        strncpy(key, op->key.c_str(),255);
                         int valuelen = op->valuelen;
                         int index = lrand48() % (1024 * 1024);
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
                         //found in l2, set in l1
                         //wb_keys.push_back(op->key);
-                        issue_set(key, &random_char[index],valuelen, now, flags);
+                        issue_set(op->key, &random_char[index],valuelen, now, flags);
                         this->stats.copies_to_l1++;
+                        //djb: this is automatically done in the L2 server
                         //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?
-                        //    issue_delete(key,now, ITEM_L2 | SRC_L1_COPY );
+                        //    issue_delete(op->key,now, ITEM_L2 | SRC_L1_COPY );
                         //}
                         finish_op(op,1);
 
@@ -1591,7 +1575,7 @@ void ConnectionMultiApprox::read_callback2() {
             break;
         case Operation::SET:
             if (OP_src(op) == SRC_WB) {
-                del_wb_keys(op->key);
+                del_wb_keys(string(op->key));
             }
             finish_op(op,1);
             break;
@@ -1611,7 +1595,7 @@ void ConnectionMultiApprox::read_callback2() {
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
             DIE("not implemented");
     }
 

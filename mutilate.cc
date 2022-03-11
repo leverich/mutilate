@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -64,6 +66,8 @@ int reader_not_ready = 1;
 
 pthread_mutex_t *item_locks;
 int item_lock_hashpower = 13;
+        
+map<string,int> g_key_hist;
 
 gengetopt_args_info args;
 char random_char[4 * 1024 * 1024];  // Buffer used to generate random values.
@@ -82,7 +86,7 @@ struct thread_data {
 #endif
   int id;
   //std::vector<ConcurrentQueue<string>*> trace_queue;
-  std::vector<queue<Operation>*> *trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue;
   //std::vector<pthread_mutex_t*> *mutexes;
   pthread_mutex_t* g_lock;
   std::unordered_map<string,int> *g_wb_keys;
@@ -90,7 +94,7 @@ struct thread_data {
 
 struct reader_data {
   //std::vector<ConcurrentQueue<string>*> trace_queue;
-  std::vector<queue<Operation>*> *trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue;
   std::vector<pthread_mutex_t*> *mutexes;
   string *trace_filename;
   int twitter_trace;
@@ -116,7 +120,7 @@ void go(const vector<string> &servers, options_t &options,
 //void do_mutilate(const vector<string> &servers, options_t &options,
 //                 ConnectionStats &stats,std::vector<ConcurrentQueue<string>*> trace_queue,  bool master = true
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats,std::vector<queue<Operation>*> *trace_queue, pthread_mutex_t *g_lock, unordered_map<string,int> *g_wb_keys,  bool master = true
+                 ConnectionStats &stats,std::vector<queue<Operation*>*> *trace_queue, pthread_mutex_t *g_lock, unordered_map<string,int> *g_wb_keys,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socketz = NULL
 #endif
@@ -743,7 +747,7 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 
   //std::vector<ConcurrentQueue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
-  std::vector<queue<Operation>*> *trace_queue = new std::vector<queue<Operation>*>(); 
+  std::vector<queue<Operation*>*> *trace_queue = new std::vector<queue<Operation*>*>(); 
   // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
   //std::vector<pthread_mutex_t*> *mutexes = new std::vector<pthread_mutex_t*>(); 
   pthread_mutex_t *g_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t)); 
@@ -756,7 +760,7 @@ void go(const vector<string>& servers, options_t& options,
   //    pthread_mutex_t *lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
   //    *lock = PTHREAD_MUTEX_INITIALIZER;
   //    mutexes->push_back(lock);
-      trace_queue->push_back(new std::queue<Operation>());
+      trace_queue->push_back(new std::queue<Operation*>());
   }
   pthread_mutex_init(&reader_l, NULL);
   pthread_cond_init(&reader_ready, NULL);
@@ -989,12 +993,21 @@ static char *get_stream(ZSTD_DCtx* dctx, FILE *fin, size_t const buffInSize, voi
 void* reader_thread(void *arg) {
   struct reader_data *rdata = (struct reader_data *) arg;
   //std::vector<ConcurrentQueue<string>*> trace_queue = (std::vector<ConcurrentQueue<string>*>) rdata->trace_queue;
-  std::vector<queue<Operation>*> *trace_queue = (std::vector<queue<Operation>*>*) rdata->trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue = (std::vector<queue<Operation*>*>*) rdata->trace_queue;
   //  std::vector<pthread_mutex_t*> *mutexes = (std::vector<pthread_mutex_t*>*) rdata->mutexes;
   int twitter_trace = rdata->twitter_trace;
   string fn = *(rdata->trace_filename);
   srand(time(NULL));
   if (hasEnding(fn,".zst")) {
+        string blobfile = fs::path( fn ).filename();
+        blobfile.erase(blobfile.length()-4);
+        blobfile.insert(0,"/dev/shm/");
+        blobfile.append(".data");
+        int do_blob = 0;
+        int blob = 0;
+        if (do_blob) {
+            blob = open(blobfile.c_str(),O_CREAT | O_APPEND | O_RDWR, S_IRWXU);
+        }
         //init
         const char *filename = fn.c_str();
         FILE* const fin  = fopen_orDie(filename, "rb");
@@ -1003,7 +1016,7 @@ void* reader_thread(void *arg) {
         size_t const buffOutSize = ZSTD_DStreamOutSize()*1000;
         void*  const buffOut = malloc_orDie(buffOutSize);
 
-        map<string,Operation> key_hist;
+        map<string,Operation*> key_hist;
         ZSTD_DCtx* const dctx = ZSTD_createDCtx();
         //CHECK(dctx != NULL, "ZSTD_createDCtx() failed!");
         //char *leftover = malloc(buffOutSize);
@@ -1011,6 +1024,7 @@ void* reader_thread(void *arg) {
 		//char *trace = (char*)decompress(filename);
         uint64_t nwrites = 0;
         uint64_t nout = 1;
+        int batch = 0;
         int cappid = 1;
         fprintf(stderr,"%lu trace queues for connections\n",trace_queue->size());
         char *trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
@@ -1023,6 +1037,7 @@ void* reader_thread(void *arg) {
                 string full_line(line);
                 //check the appid
                 int appid = 0;
+                int first = 1;
                 if (full_line.length() > 10) {
                     
                     if (trace_queue->size() > 0) {
@@ -1032,7 +1047,7 @@ void* reader_thread(void *arg) {
                         string rKey;
                         string rOp;
                         string rvaluelen;
-                        Operation Op;
+                        Operation *Op = new Operation;
                         if (twitter_trace == 1) {
                             string rKeySize;
                             size_t n = std::count(full_line.begin(), full_line.end(), ',');
@@ -1044,21 +1059,23 @@ void* reader_thread(void *arg) {
                                 getline( ss, rApp, ',' );
                                 getline( ss, rOp, ',' );
                                 if (rOp.compare("get") == 0) {
-                                    Op.type = Operation::GET;
+                                    Op->type = Operation::GET;
                                 } else if (rOp.compare("set") == 0) {
-                                    Op.type = Operation::SET;
+                                    Op->type = Operation::SET;
                                 }
                                 if (rvaluelen.compare("") == 0 || rvaluelen.size() < 1 || rvaluelen.empty()) {
                                     continue;
                                 }
-                                //appid = cappid;
-                                //if (nout % 1000 == 0) {
-                                //    cappid++;
-                                //    cappid = cappid % trace_queue->size();
-                                //    if (cappid == 0) cappid = 1;
-                                //}
-                                appid = stoi(rApp) % trace_queue->size();
+                                appid = cappid;
+                                if (nout % 1000 == 0) {
+                                    cappid++;
+                                    cappid = cappid % trace_queue->size();
+                                    if (cappid == 0) cappid = 1;
+                                }
+                                //appid = stoi(rApp) % trace_queue->size();
                                 if (appid == 0) appid = 1;
+                                //appid = (rand() % (trace_queue->size()-1)) + 1;
+                                //if (appid == 0) appid = 1;
                                 
                                 
                             } else {
@@ -1077,10 +1094,10 @@ void* reader_thread(void *arg) {
                                 int ot = stoi(rOp);
                                 switch (ot) {
                                     case 1:
-                                        Op.type = Operation::GET;
+                                        Op->type = Operation::GET;
                                         break;
                                     case 2:
-                                        Op.type = Operation::SET;
+                                        Op->type = Operation::SET;
                                         break;
                                 }
                                 appid = (stoi(rApp)) % trace_queue->size();
@@ -1101,27 +1118,25 @@ void* reader_thread(void *arg) {
                                 int ot = stoi(rOp);
                                 switch (ot) {
                                     case 1:
-                                        Op.type = Operation::GET;
+                                        Op->type = Operation::GET;
                                         break;
                                     case 2:
-                                        Op.type = Operation::SET;
+                                        Op->type = Operation::SET;
                                         break;
                                 }
-                                
-                                //appid = (rand() % (trace_queue->size()-1)) + 1;
-                                appid = cappid;
-                                if (nout % 1000 == 0) {
-                                    cappid++;
-                                    cappid = cappid % trace_queue->size();
-                                    if (cappid == 0) cappid = 1;
+                                if (first) {
+                                    appid = (rand() % (trace_queue->size()-1)) + 1;
+                                    if (appid == 0) appid = 1;
+                                    first = 0;
                                 }
+                                batch++;
                             } else {
                                 continue;
                             }
                         } 
                         else if (twitter_trace == 4) {
                             size_t n = std::count(full_line.begin(), full_line.end(), ',');
-                            if (n == 3) {
+                            if (n == 4) {
                                 getline( ss, rT, ',');
                                 getline( ss, rKey, ',' );
                                 getline( ss, rOp, ',' );
@@ -1129,10 +1144,10 @@ void* reader_thread(void *arg) {
                                 int ot = stoi(rOp);
                                 switch (ot) {
                                     case 1:
-                                        Op.type = Operation::GET;
+                                        Op->type = Operation::GET;
                                         break;
                                     case 2:
-                                        Op.type = Operation::SET;
+                                        Op->type = Operation::SET;
                                         break;
                                 }
                                 if (rvaluelen == "0") {
@@ -1140,33 +1155,39 @@ void* reader_thread(void *arg) {
                                 }
 
                                 appid = (rand() % (trace_queue->size()-1)) + 1;
-                                //appid = cappid;
-                                //if (nout % 1000 == 0) {
-                                //    cappid++;
-                                //    cappid = cappid % trace_queue->size();
-                                //    if (cappid == 0) cappid = 1;
-                                //}
+                                if (appid == 0) appid = 1;
                             } else {
                                 continue;
                             }
                         } 
                         int vl = stoi(rvaluelen);
                         if (appid < (int)trace_queue->size() && vl < 524000 && vl > 1) {
-                            Op.valuelen = vl;
-                            Op.key = rKey;
-                            if (Op.type == Operation::GET) {
+                            Op->valuelen = vl;
+                            strncpy(Op->key,rKey.c_str(),255);;
+                            if (Op->type == Operation::GET) {
                                 //find when was last read
-                                Operation last_op = key_hist[rKey];
-                                if (last_op.valuelen > 0) {
-                                    last_op.future = nout; //THE FUTURE IS NOW
-                                    Op.curr = nout;
+                                Operation *last_op = key_hist[rKey];
+                                if (last_op != NULL) {
+                                    last_op->future = 1; //THE FUTURE IS NOW
+                                    Op->curr = 1;
+                                    Op->future = 0;
                                     key_hist[rKey] = Op;
+                                    g_key_hist[rKey] = 1;
                                 } else {
                                     //first ref
+                                    Op->curr = 1;
+                                    Op->future = 0;
                                     key_hist[rKey] = Op;
+                                    g_key_hist[rKey] = 0;
                                 }
                             }
+                            Op->appid = appid;
                             trace_queue->at(appid)->push(Op);
+                            if (twitter_trace == 3 && batch == 2) {
+                                appid = (rand() % (trace_queue->size()-1)) + 1;
+                                if (appid == 0) appid = 1;
+                                batch = 0;
+                            }
                         }
                     } else {
                         fprintf(stderr,"big error!\n");
@@ -1180,12 +1201,6 @@ void* reader_thread(void *arg) {
                 //}
                 nout++;
                 if (nout % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, waits: %lu\n",nout,nwrites);
-                //if (n > 100000000) {
-                //    pthread_mutex_lock(&reader_l);
-                //    reader_not_ready = 0; 
-                //    pthread_mutex_unlock(&reader_l);
-                //    pthread_cond_signal(&reader_ready);
-                //}
 
             }
             free(line_p);
@@ -1193,17 +1208,32 @@ void* reader_thread(void *arg) {
             trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
         }
 
-  	for (int i = 0; i < 1000; i++) {
+  	for (int i = 0; i < 10; i++) {
             for (int j = 0; j < (int)trace_queue->size(); j++) {
   	        //trace_queue[j]->enqueue(eof);
-                Operation eof;
-                eof.type = Operation::SASL;
+                Operation *eof = new Operation;
+                eof->type = Operation::SASL;
+                eof->appid = j;
   	        trace_queue->at(j)->push(eof);
                 if (i == 0) {
                     fprintf(stderr,"appid %d, tq size: %ld\n",j,trace_queue->at(j)->size());
                 }
             }
   	}
+        if (do_blob) {
+            for (int i = 0; i < (int)trace_queue->size(); i++) {
+                queue<Operation*> tmp = *(trace_queue->at(i));
+                while (!tmp.empty()) {
+                    Operation *Op = tmp.front();
+                    int br = write(blob,(void*)(Op),sizeof(Operation));
+                    if (br != sizeof(Operation)) {
+                        fprintf(stderr,"error writing op!\n");
+                    }
+                    tmp.pop();
+                }
+
+            }
+        }
 
         pthread_mutex_lock(&reader_l);
         if (reader_not_ready) {
@@ -1220,7 +1250,41 @@ void* reader_thread(void *arg) {
         free(buffOut);
 
 	
-  } //else {
+  } else if (hasEnding(fn,".data")) {
+     ifstream trace_file (fn, ios::in | ios::binary);
+    uint32_t treqs = 0;
+     char *ops = (char*)malloc(sizeof(Operation)*1000000);
+     Operation *optr = (Operation*)(ops);
+     while (trace_file.good()) {
+        trace_file.read((char*)ops,sizeof(Operation)*1000000);
+        int tbytes = trace_file.gcount();
+        int tops = tbytes/sizeof(Operation);
+        for (int i = 0; i < tops; i++) {
+            Operation *op = (Operation*)optr;
+            string rKey = string(op->key);
+            g_key_hist[rKey] = 0;
+            if (op->future) {
+                g_key_hist[rKey] = 1;
+            }
+            trace_queue->at(op->appid)->push(op);
+            treqs++;
+            if (treqs % 1000000 == 0) fprintf(stderr,"loaded requests: %u\n",treqs);
+            optr++;
+
+        }
+        optr = (Operation*)ops;
+     }
+     trace_file.close();
+     
+     pthread_mutex_lock(&reader_l);
+     if (reader_not_ready) {
+         reader_not_ready = 0;
+     }
+     pthread_mutex_unlock(&reader_l);
+     pthread_cond_signal(&reader_ready);
+
+  }
+      //else {
  
   	//ifstream trace_file;
   	//trace_file.open(rdata->trace_filename);
@@ -1241,11 +1305,11 @@ void* reader_thread(void *arg) {
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
-  int res = stick_this_thread_to_core(td->id % num_cores);
-  if (res != 0) {
-        DIE("pthread_attr_setaffinity_np(%d) failed: %s",
-                  td->id, strerror(res));
-  }
+  //int res = stick_this_thread_to_core(td->id % num_cores);
+  //if (res != 0) {
+  //      DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+  //                td->id, strerror(res));
+  //}
   ConnectionStats *cs = new ConnectionStats();
 
   do_mutilate(*td->servers, *td->options, *cs,  td->trace_queue, td->g_lock, td->g_wb_keys, td->master
@@ -1258,7 +1322,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, vector<queue<Operation>*> *trace_queue, pthread_mutex_t* g_lock, unordered_map<string,int> *g_wb_keys, bool master 
+                 ConnectionStats& stats, vector<queue<Operation*>*> *trace_queue, pthread_mutex_t* g_lock, unordered_map<string,int> *g_wb_keys, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socketz
 #endif
@@ -1627,7 +1691,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       
       if (connected) {
         fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
-        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front().key.c_str());
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
         if (g_lock != NULL) {
             conn->set_g_wbkeys(g_wb_keys);
             conn->set_lock(g_lock);
@@ -1784,7 +1848,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       
       if (connected) {
         fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
-        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front().key.c_str());
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
         if (g_lock != NULL) {
             conn->set_g_wbkeys(g_wb_keys);
             conn->set_lock(g_lock);
@@ -1876,6 +1940,7 @@ void args_to_options(options_t* options) {
   options->rand_admit = args.rand_admit_arg;
   options->threshold = args.threshold_arg;
   options->wb_all = args.wb_all_arg;
+  options->ratelimit = args.ratelimit_given;
   if (args.inclusives_given) {
     memset(options->inclusives,0,256);
     strncpy(options->inclusives,args.inclusives_arg,256);

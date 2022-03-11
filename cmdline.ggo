@@ -10,6 +10,7 @@ option "quiet" - "Disable log messages."
 
 text "\nBasic options:"
 
+option "ratelimit" - "limit conns from exceeding each other in requests"
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
 option "unix_socket" - "Use UNIX socket instead of TCP."

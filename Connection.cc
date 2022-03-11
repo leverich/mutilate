@@ -78,13 +78,10 @@ void item_trylock_unlock(void *lock, uint32_t cid) {
 
 void Connection::output_op(Operation *op, int type, bool found) {
     char output[1024];
-    char k[256];
     char a[256];
     char s[256];
-    memset(k,0,256);
     memset(a,0,256);
     memset(s,0,256);
-    strcpy(k,op->key.c_str());
     switch (type) {
         case 0: //get
             sprintf(a,"issue_get");
@@ -123,9 +120,9 @@ void Connection::output_op(Operation *op, int type, bool found) {
             break;
     }
     if (type == 2) {
-        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, found: %d, type: %d\n",cid,a,k,op->opaque,found,op->type);
+        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, found: %d, type: %d\n",cid,a,op->key,op->opaque,found,op->type);
     } else {
-        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, type: %d\n",cid,a,k,op->opaque,op->type);
+        sprintf(output,"conn: %u, action: %s op: %s, opaque: %u, type: %d\n",cid,a,op->key,op->opaque,op->type);
     }
     write(2,output,strlen(output));
 }
@@ -684,7 +681,7 @@ int Connection::issue_get_with_len(const char* key, int valuelen, double now, bo
   }
   //pthread_mutex_unlock(&opaque_lock);
 
-  op.key = string(key);
+  strncpy(op.key,key,255);
   op.valuelen = valuelen;
   op.type = Operation::GET;
   //op.hv = hashstr(op.key);
@@ -753,7 +750,7 @@ void Connection::issue_get(const char* key, double now) {
       opaque = 0;
   }
   
-  op.key = string(key);
+  strncpy(op.key,key,255);
   op.type = Operation::GET;
   //op.hv = hashstr(op.key);
   //item_lock(op.hv,cid);
@@ -836,7 +833,7 @@ void Connection::issue_set_miss(const char* key, const char* value, int length) 
       opaque = 0;
   }
   
-  op.key = string(key);
+  strncpy(op.key,key,255);
   op.valuelen = length;
   op.type = Operation::SET;
   //op.hv = hashstr(op.key);
@@ -911,9 +908,9 @@ int Connection::issue_set(const char* key, const char* value, int length,
       opaque = 0;
   }
   
-  op.key = string(key);
   op.valuelen = length;
   op.type = Operation::SET;
+  strncpy(op.key,key,255);
   //op.hv = hashstr(op.key);
   //pthread_mutex_t *lock = (pthread_mutex_t*)item_trylock(op.hv,cid);
   //if (lock != NULL) {
@@ -1281,7 +1278,7 @@ void Connection::read_callback() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (op->key.length() < 1) {
+        if (strlen(op->key) < 1) {
             //char out2[128];
             //sprintf(out2,"conn: %u, bad op: %s\n",cid,op->key.c_str());
             //write(2,out2,strlen(out2));
@@ -1327,7 +1324,7 @@ void Connection::read_callback() {
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
             DIE("not implemented");
     }
 

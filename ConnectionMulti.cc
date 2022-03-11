@@ -176,7 +176,7 @@ void ConnectionMulti::output_op(Operation *op, int type, bool found) {
     memset(k,0,256);
     memset(a,0,256);
     memset(s,0,256);
-    strcpy(k,op->key.c_str());
+    strncpy(k,op->key,255);
     switch (type) {
         case 0: //get
             sprintf(a,"issue_get");
@@ -295,7 +295,7 @@ ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _e
 }
 
 
-void ConnectionMulti::set_queue(queue<Operation>* a_trace_queue) {
+void ConnectionMulti::set_queue(queue<Operation*>* a_trace_queue) {
     trace_queue = a_trace_queue;
     trace_queue_n = a_trace_queue->size();
 }
@@ -451,7 +451,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
     
     //pthread_mutex_lock(lock);
     if (!trace_queue->empty()) {
-        Operation Op = trace_queue->front();
+        Operation Op = *(trace_queue->front());
         if (Op.type == Operation::SASL) {
             eof = 1;
             cid_rate[cid] = 100;
@@ -512,7 +512,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
                 good = evtimer_add(timer, &tv);
             }
             if (good != 0) {
-                fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op.key.c_str());
+                fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op.key);
                 return 2;
             }
             return 1;
@@ -526,7 +526,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
         
         char key[256];
         memset(key,0,256);
-        strncpy(key, Op.key.c_str(),255);
+        strncpy(key, Op.key,255);
         int vl = Op.valuelen;
 
         trace_queue->pop();
@@ -639,7 +639,7 @@ int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double no
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->valuelen = valuelen;
   pop->type = Operation::GET;
   pop->opaque = opaque[level]++;
@@ -713,7 +713,7 @@ int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int 
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->valuelen = valuelen;
   pop->type = Operation::TOUCH;
   pop->opaque = opaque[level]++;
@@ -788,7 +788,7 @@ int ConnectionMulti::issue_delete(const char* key, double now, uint32_t flags) {
   }
 #endif
 
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->type = Operation::DELETE;
   pop->opaque = opaque[level]++;
   pop->flags = flags;
@@ -872,7 +872,7 @@ int ConnectionMulti::issue_set(const char* key, const char* value, int length, d
 #endif
 
   
-  pop->key = string(key);
+  strncpy(pop->key,key,255);
   pop->valuelen = length;
   pop->type = Operation::SET;
   pop->opaque = opaque[level]++;
@@ -1335,10 +1335,10 @@ void ConnectionMulti::read_callback1() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (op->key.length() < 1) {
+        if (strlen(op->key) < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key.c_str());
+            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key);
             write(2,out2,strlen(out2));
 #endif
             if (evict->evictedKey) free(evict->evictedKey);
@@ -1368,7 +1368,7 @@ void ConnectionMulti::read_callback1() {
                     /* issue a get a l2 */
                     char key[256];
                     memset(key,0,256);
-                    strncpy(key, op->key.c_str(),255);
+                    strncpy(key, op->key,255);
                     int vl = op->valuelen;
                     int flags = OP_clu(op);
                     issue_get_with_len(key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
@@ -1444,7 +1444,7 @@ void ConnectionMulti::read_callback1() {
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
             DIE("not implemented");
     }
 
@@ -1518,10 +1518,10 @@ void ConnectionMulti::read_callback2() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (op->key.length() < 1) {
+        if (strlen(op->key) < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key.c_str());
+            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key);
             write(2,out2,strlen(out2));
 #endif
             continue;
@@ -1539,7 +1539,7 @@ void ConnectionMulti::read_callback2() {
                     //(options.twitter_trace != 1)) {
                     char key[256];
                     memset(key,0,256);
-                    strncpy(key, op->key.c_str(),255);
+                    strncpy(key, op->key,255);
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
@@ -1564,7 +1564,7 @@ void ConnectionMulti::read_callback2() {
                     if (found) {
                         char key[256];
                         memset(key,0,256);
-                        strncpy(key, op->key.c_str(),255);
+                        strncpy(key, op->key,255);
                         int valuelen = op->valuelen;
                         int index = lrand48() % (1024 * 1024);
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
@@ -1597,7 +1597,7 @@ void ConnectionMulti::read_callback2() {
             if (OP_src(op) == SRC_DIRECT_SET) {
                 char key[256];
                 memset(key,0,256);
-                strncpy(key, op->key.c_str(),255);
+                strncpy(key, op->key,255);
                 int valuelen = op->valuelen;
                 if (!found) {
                     int index = lrand48() % (1024 * 1024);
@@ -1646,7 +1646,7 @@ void ConnectionMulti::read_callback2() {
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
             DIE("not implemented");
     }
 
