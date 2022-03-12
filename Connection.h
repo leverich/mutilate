@@ -449,7 +449,9 @@ private:
   int issue_touch(const char* key, int valuelen, double now, int level);
   int issue_delete(const char* key, double now, uint32_t flags);
   int issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
+  int issue_get_with_len(Operation *pop, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
   int issue_set(const char* key, const char* value, int length, double now, uint32_t flags);
+  int issue_set(Operation *pop, const char* value, double now, uint32_t flags);
 
   // protocol fucntions
   int set_request_ascii(const char* key, const char* value, int length);

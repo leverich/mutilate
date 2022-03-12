@@ -128,8 +128,6 @@ static void init_inclusives(char *inclusive_str) {
 static void init_classes() {
 
     double factor = 1.25;
-    unsigned int chunk_size = 48;
-    unsigned int item_size = 24;
     unsigned int size = 96; //warning if you change this you die
     unsigned int i = 0;
     unsigned int chunk_size_max = 1048576/2;

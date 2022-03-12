@@ -89,7 +89,7 @@
 
 using namespace moodycamel;
 
-pthread_mutex_t cid_lock_m_approx = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t cid_lock_m = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t connids_m = 1;
 
 #define NCLASSES 40
@@ -110,7 +110,7 @@ typedef struct _evicted_type {
 } evicted_t;
 
 static vector<double> cid_rate;
-extern map<string,int> g_key_hist;
+
 extern int max_n[3];
 
 static void init_inclusives(char *inclusive_str) {
@@ -128,8 +128,8 @@ static void init_inclusives(char *inclusive_str) {
 static void init_classes() {
 
     double factor = 1.25;
-    //unsigned int chunk_size = 48;
-    //unsigned int item_size = 24;
+    unsigned int chunk_size = 48;
+    unsigned int item_size = 24;
     unsigned int size = 96; //warning if you change this you die
     unsigned int i = 0;
     unsigned int chunk_size_max = 1048576/2;
@@ -168,7 +168,7 @@ static int get_incl(int vl, int kl) {
     }
 }
 
-void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
+void ConnectionMulti::output_op(Operation *op, int type, bool found) {
     char output[1024];
     char k[256];
     char a[256];
@@ -176,7 +176,7 @@ void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
     memset(k,0,256);
     memset(a,0,256);
     memset(s,0,256);
-    strncpy(k,op->key,255);
+    strcpy(k,op->key.c_str());
     switch (type) {
         case 0: //get
             sprintf(a,"issue_get");
@@ -225,13 +225,13 @@ void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
 /**
  * Create a new connection to a server endpoint.
  */
-ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct evdns_base* _evdns,
+ConnectionMulti::ConnectionMulti(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname1, string _hostname2, string _port, options_t _options,
                        bool sampling, int fd1, int fd2 ) :
   start_time(0), stats(sampling), options(_options),
   hostname1(_hostname1), hostname2(_hostname2), port(_port), base(_base), evdns(_evdns)
 {
-  pthread_mutex_lock(&cid_lock_m_approx);
+  pthread_mutex_lock(&cid_lock_m);
   cid = connids_m++;
   if (cid == 1) {
     cid_rate.push_back(100);
@@ -242,7 +242,7 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
     cid_rate.push_back(0);
   }
   
-  pthread_mutex_unlock(&cid_lock_m_approx);
+  pthread_mutex_unlock(&cid_lock_m);
   
   valuesize = createGenerator(options.valuesize);
   keysize = createGenerator(options.keysize);
@@ -267,10 +267,8 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   last_quiet2 = false;
   
   last_tx = last_rx = 0.0;
-  gets = 0;
-  ghits = 0;
-  gloc = rand() % (100*2-1)+1;
 
+  
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   op_queue = (Operation***)malloc(sizeof(Operation**)*(LEVELS+1));
@@ -279,46 +277,42 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
       op_queue_size[i] = 0;
       opaque[i] = 1;
       //op_queue[i] = (Operation*)malloc(sizeof(int)*OPAQUE_MAX);
-      op_queue[i] = (Operation**)malloc(sizeof(Operation*)*(OPAQUE_MAX+1));
-      for (int j = 0; j <= OPAQUE_MAX; j++) {
-          op_queue[i][j] = NULL;
-      }
+      op_queue[i] = (Operation**)malloc(sizeof(Operation*)*(OPAQUE_MAX*2));
 
   }
-
   
   bev1 = bufferevent_socket_new(base, fd1, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev1, bev_read_cb1_approx, bev_write_cb_m_approx, bev_event_cb1_approx, this);
+  bufferevent_setcb(bev1, bev_read_cb1, bev_write_cb_m, bev_event_cb1, this);
   bufferevent_enable(bev1, EV_READ | EV_WRITE);
   
   bev2 = bufferevent_socket_new(base, fd2, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev2, bev_read_cb2_approx, bev_write_cb_m_approx, bev_event_cb2_approx, this);
+  bufferevent_setcb(bev2, bev_read_cb2, bev_write_cb_m, bev_event_cb2, this);
   bufferevent_enable(bev2, EV_READ | EV_WRITE);
   
-  timer = evtimer_new(base, timer_cb_m_approx, this);
+  timer = evtimer_new(base, timer_cb_m, this);
 
   read_state  = IDLE;
 }
 
 
-void ConnectionMultiApprox::set_queue(queue<Operation*>* a_trace_queue) {
+void ConnectionMulti::set_queue(queue<Operation>* a_trace_queue) {
     trace_queue = a_trace_queue;
     trace_queue_n = a_trace_queue->size();
 }
 
-void ConnectionMultiApprox::set_lock(pthread_mutex_t* a_lock) {
+void ConnectionMulti::set_lock(pthread_mutex_t* a_lock) {
     lock = a_lock;
 }
 
-void ConnectionMultiApprox::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
+void ConnectionMulti::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
     g_wb_keys = a_wb_keys;
 }
 
-uint32_t ConnectionMultiApprox::get_cid() {
+uint32_t ConnectionMulti::get_cid() {
     return cid;
 }
 
-int ConnectionMultiApprox::add_to_wb_keys(string key) {
+int ConnectionMulti::add_to_wb_keys(string key) {
     int ret = -1;
     pthread_mutex_lock(lock);
     auto pos = g_wb_keys->find(key);
@@ -338,7 +332,7 @@ int ConnectionMultiApprox::add_to_wb_keys(string key) {
     return ret;
 }
 
-void ConnectionMultiApprox::del_wb_keys(string key) {
+void ConnectionMulti::del_wb_keys(string key) {
 
     pthread_mutex_lock(lock);
     auto position = g_wb_keys->find(key);
@@ -351,7 +345,7 @@ void ConnectionMultiApprox::del_wb_keys(string key) {
 }
 
 
-int ConnectionMultiApprox::do_connect() {
+int ConnectionMulti::do_connect() {
 
   int connected = 0;
   if (options.unix_socket) {
@@ -396,7 +390,7 @@ int ConnectionMultiApprox::do_connect() {
 /**
  * Destroy a connection, performing cleanup.
  */
-ConnectionMultiApprox::~ConnectionMultiApprox() {
+ConnectionMulti::~ConnectionMulti() {
  
 
   for (int i = 0; i <= LEVELS; i++) {
@@ -422,7 +416,7 @@ ConnectionMultiApprox::~ConnectionMultiApprox() {
 /**
  * Reset the connection back to an initial, fresh state.
  */
-void ConnectionMultiApprox::reset() {
+void ConnectionMulti::reset() {
   // FIXME: Actually check the connection, drain all bufferevents, drain op_q.
   //assert(op_queue.size() == 0);
   //evtimer_del(timer);
@@ -434,7 +428,7 @@ void ConnectionMultiApprox::reset() {
 /**
  * Set our event processing priority.
  */
-void ConnectionMultiApprox::set_priority(int pri) {
+void ConnectionMulti::set_priority(int pri) {
   if (bufferevent_priority_set(bev1, pri)) {
     DIE("bufferevent_set_priority(bev, %d) failed", pri);
   }
@@ -447,149 +441,159 @@ void ConnectionMultiApprox::set_priority(int pri) {
  * If a GET command: Issue a get first, if not found then set
  * If trace file (or prob. write) says to set, then set it
  */
-int ConnectionMultiApprox::issue_getsetorset(double now) {
+int ConnectionMulti::issue_getsetorset(double now) {
  
 
     
     int ret = 0;
     int nissued = 0;
-    while (nissued < 2) {
+    //while (nissued < options.depth) {
     
     //pthread_mutex_lock(lock);
-        if (!trace_queue->empty()) {
-            Operation *Op = (trace_queue->front());
-            if (Op->type == Operation::SASL) {
-                eof = 1;
-                cid_rate[cid] = 100;
-                fprintf(stderr,"cid %d done\n",cid);
-                string op_queue1;
-                string op_queue2;
-                for (int j = 0; j < 2; j++) {
-                    for (int i = 0; i < OPAQUE_MAX; i++) {
-                        if (op_queue[j+1][i] != NULL) {
-                            if (j == 0) {
-                                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
-                            } else {
-                                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
-                            }
+    if (!trace_queue->empty()) {
+        Operation Op = trace_queue->front();
+        if (Op.type == Operation::SASL) {
+            eof = 1;
+            cid_rate[cid] = 100;
+            fprintf(stderr,"cid %d done\n",cid);
+            string op_queue1;
+            string op_queue2;
+            for (int j = 0; j < 2; j++) {
+                for (int i = 0; i < OPAQUE_MAX; i++) {
+                    if (op_queue[j+1][i] != NULL) {
+                        if (j == 0) {
+                            op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
+                        } else {
+                            op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
                         }
                     }
                 }
-                fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
-                return 1;
-            } 
-            
-
-            /* check if in global wb queue */
-            double percent = (double)total/((double)trace_queue_n) * 100;
-            if (percent > o_percent+2) {
-                //update the percentage table and see if we should execute
-                pthread_mutex_lock(lock);
-                std::vector<double>::iterator mp = std::min_element(cid_rate.begin(), cid_rate.end());
-                double min_percent = *mp;
-
-                if (options.ratelimit && percent > min_percent+2) {
-                    struct timeval tv;
-                    tv.tv_sec = 1;
-                    tv.tv_usec = 0;
-                    int good = 0;
-                    if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                        good = evtimer_add(timer, &tv);
-                    }
-                    if (good != 0) {
-                        pthread_mutex_unlock(lock);
-                        fprintf(stderr,"eventimer is messed up!\n");
-                        return 2;
-                    }
-                    pthread_mutex_unlock(lock);
-                    return 1;
-                }
-                cid_rate[cid] = percent;
-                pthread_mutex_unlock(lock);
-                //fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
-                o_percent = percent;
             }
+            fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
+            return 1;
+        } 
+        
 
-            pthread_mutex_lock(lock);
-            auto check = g_wb_keys->find(string(Op->key));
-            if (check != g_wb_keys->end()) {
+        /* check if in global wb queue */
+        pthread_mutex_lock(lock);
+        double percent = (double)total/((double)trace_queue_n) * 100;
+        if (percent > o_percent+1) {
+            //update the percentage table and see if we should execute
+            std::vector<double>::iterator mp = std::min_element(cid_rate.begin(), cid_rate.end());
+            double min_percent = *mp;
+
+            if (percent > min_percent+2) {
                 pthread_mutex_unlock(lock);
                 struct timeval tv;
-                double delay; 
-                delay = last_rx + 0.00025 - now;
-                double_to_tv(delay,&tv);
+                tv.tv_sec = 1;
+                tv.tv_usec = 0;
                 int good = 0;
-                //if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                good = evtimer_add(timer, &tv);
-                //}
+                if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+                    good = evtimer_add(timer, &tv);
+                }
                 if (good != 0) {
-                    fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op->key);
+                    fprintf(stderr,"eventimer is messed up!\n");
                     return 2;
                 }
                 return 1;
-            } else {
-                pthread_mutex_unlock(lock);
             }
-
-            
-
-            trace_queue->pop();
-
-            int issued = 0;
-            int incl = get_incl(Op->valuelen,strlen(Op->key));
-            int cid = get_class(Op->valuelen,strlen(Op->key));
-            Op->clsid = cid;
-            int flags = 0;
-            int index = lrand48() % (1024 * 1024);
-            //int touch = 1;
-            SET_INCL(incl,flags);
-            
-            switch(Op->type)
-            {
-              case Operation::GET:
-                  //if (nissued < options.depth-1) {
-                  //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
-                  //  last_quiet1 = false;
-                  //} else {
-                  //}
-                  issued = issue_get_with_len(Op, now, false, flags | LOG_OP | ITEM_L1);
-                  last_quiet1 = false;
-                  this->stats.gets++;
-                  gets++;
-                  this->stats.gets_cid[cid]++;
-
-                  break;
-            case Operation::SET:
-                  if (last_quiet1) {
-                      issue_noop(now,1);
-                  }
-                  if (incl == 1) {
-                    issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
-                  } else if (incl == 2) {
-                    issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
-                  }
-                  last_quiet1 = false;
-                  this->stats.sets++;
-                  this->stats.sets_cid[cid]++;
-                  break;
-            case Operation::DELETE:
-            case Operation::TOUCH:
-            case Operation::NOOP:
-            case Operation::SASL:
-                  fprintf(stderr,"invalid line: %s, vl: %d\n",Op->key,Op->valuelen);
-                  break;
-            
-            }
-            if (issued) {
-                nissued++;
-                total++;
-            } else {
-                fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
-            }
-        } else {
-            return 1;
+            cid_rate[cid] = percent;
+            fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
+            o_percent = percent;
         }
+        auto check = g_wb_keys->find(Op.key);
+        if (check != g_wb_keys->end()) {
+            pthread_mutex_unlock(lock);
+            struct timeval tv;
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+            int good = 0;
+            if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+                good = evtimer_add(timer, &tv);
+            }
+            if (good != 0) {
+                fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op.key.c_str());
+                return 2;
+            }
+            return 1;
+        } else {
+            g_wb_keys->insert( {Op.key, cid} );
+            //g_wb_keys->insert( {Op.key+"l2", cid} );
+        }
+        pthread_mutex_unlock(lock);
+
+        
+        
+        char key[256];
+        memset(key,0,256);
+        strncpy(key, Op.key.c_str(),255);
+        int vl = Op.valuelen;
+
+        trace_queue->pop();
+
+        int issued = 0;
+        int incl = get_incl(vl,strlen(key));
+        int cid = get_class(vl,strlen(key));
+        int flags = 0;
+        int touch = (rand() % 100);
+        int index = lrand48() % (1024 * 1024);
+        //int touch = 1;
+        SET_INCL(incl,flags);
+        
+        switch(Op.type)
+        {
+          case Operation::GET:
+              //if (nissued < options.depth-1) {
+              //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
+              //  last_quiet1 = false;
+              //} else {
+              //}
+              if (options.threshold > 0) {
+                if (Op.future) {
+                    key_hist[key] = 1;
+                }
+              }
+              issued = issue_get_with_len(key, vl, now, false, flags | LOG_OP | ITEM_L1);
+              if (touch == 1 && incl == 1) {
+                issue_touch(key,vl,now, ITEM_L2 | SRC_L1_H);
+              }
+              last_quiet1 = false;
+              this->stats.gets++;
+              this->stats.gets_cid[cid]++;
+
+              break;
+        case Operation::SET:
+              if (last_quiet1) {
+                  issue_noop(now,1);
+              }
+              if (incl == 1) {
+                issue_touch(key,vl,now, ITEM_L2 | SRC_DIRECT_SET);
+              } else if (incl == 2) {
+                issue_delete(key,now, ITEM_L2 | SRC_DIRECT_SET );
+              }
+              issued = issue_set(key, &random_char[index], vl, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
+              last_quiet1 = false;
+              this->stats.sets++;
+              this->stats.sets_cid[cid]++;
+              break;
+        case Operation::DELETE:
+        case Operation::TOUCH:
+        case Operation::NOOP:
+        case Operation::SASL:
+              fprintf(stderr,"invalid line: %s, vl: %d\n",key,vl);
+              break;
+        
+        }
+        if (issued) {
+            nissued++;
+            total++;
+        } else {
+            fprintf(stderr,"failed to issue line: %s, vl: %d @T: XX \n",key,vl);
+        }
+    } else {
+        return 1;
     }
+    //}
     if (last_quiet1) {
         issue_noop(now,1);
         last_quiet1 = false;
@@ -602,77 +606,7 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
 /**
  * Issue a get request to the server.
  */
-int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool quiet, uint32_t flags, Operation *l1) {
-
-  struct evbuffer *output = NULL;
-  int level = 0;
-  switch (FLAGS_level(flags)) {
-      case 1:
-          level = 1;
-          output = bufferevent_get_output(bev1);
-          break;
-      case 2:
-          level = 2;
-          output = bufferevent_get_output(bev2);
-          break;
-  }
-
-#if HAVE_CLOCK_GETTIME
-  pop->start_time = get_time_accurate();
-#else
-  if (now == 0.0) {
-#if USE_CACHED_TIME
-    struct timeval now_tv;
-    event_base_gettimeofday_cached(base, &now_tv);
-    pop->start_time = tv_to_double(&now_tv);
-#else
-    pop->start_time = get_time();
-#endif
-  } else {
-    pop->start_time = now;
-  }
-#endif
-
-  pop->opaque = opaque[level]++;
-  pop->flags = flags;
-  if (l1 != NULL) {
-      pop->l1 = l1;
-  }
-  op_queue[level][pop->opaque] = pop;
-  //op_queue[level].push(op);
-  op_queue_size[level]++;
-
-#ifdef DEBUGS
-  fprintf(stderr,"cid: %d issing get: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,key,valuelen,level,flags,pop->opaque);
-#endif
-  
-  if (opaque[level] > OPAQUE_MAX) {
-      opaque[level] = 1;
-  }
-
-  //if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  uint16_t keylen = strlen(pop->key);
-
-  // each line is 4-bytes
-  binary_header_t h = { 0x80, CMD_GET, htons(keylen),
-                        0x00, 0x00, htons(0),
-                        htonl(keylen) };
-  if (quiet) {
-      h.opcode = CMD_GETQ;
-  }
-  h.opaque = htonl(pop->opaque);
-  
-  evbuffer_add(output, &h, 24);
-  evbuffer_add(output, pop->key, keylen);
-
-  stats.tx_bytes += 24 + keylen;
-  return 1;
-}
-
-/**
- * Issue a get request to the server.
- */
-int ConnectionMultiApprox::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1) {
+int ConnectionMulti::issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1) {
 
   struct evbuffer *output = NULL;
   int level = 0;
@@ -705,7 +639,7 @@ int ConnectionMultiApprox::issue_get_with_len(const char* key, int valuelen, dou
   }
 #endif
 
-  strncpy(pop->key,key,255);
+  pop->key = string(key);
   pop->valuelen = valuelen;
   pop->type = Operation::GET;
   pop->opaque = opaque[level]++;
@@ -748,7 +682,7 @@ int ConnectionMultiApprox::issue_get_with_len(const char* key, int valuelen, dou
 /**
  * Issue a get request to the server.
  */
-int ConnectionMultiApprox::issue_touch(const char* key, int valuelen, double now, int flags) {
+int ConnectionMulti::issue_touch(const char* key, int valuelen, double now, int flags) {
   struct evbuffer *output = NULL;
   int level = 0;
   switch (FLAGS_level(flags)) {
@@ -779,7 +713,7 @@ int ConnectionMultiApprox::issue_touch(const char* key, int valuelen, double now
   }
 #endif
 
-  strncpy(pop->key,key,255);
+  pop->key = string(key);
   pop->valuelen = valuelen;
   pop->type = Operation::TOUCH;
   pop->opaque = opaque[level]++;
@@ -822,7 +756,7 @@ int ConnectionMultiApprox::issue_touch(const char* key, int valuelen, double now
 /**
  * Issue a delete request to the server.
  */
-int ConnectionMultiApprox::issue_delete(const char* key, double now, uint32_t flags) {
+int ConnectionMulti::issue_delete(const char* key, double now, uint32_t flags) {
   struct evbuffer *output = NULL;
   int level = 0;
   switch (FLAGS_level(flags)) {
@@ -854,7 +788,7 @@ int ConnectionMultiApprox::issue_delete(const char* key, double now, uint32_t fl
   }
 #endif
 
-  strncpy(pop->key,key,255);
+  pop->key = string(key);
   pop->type = Operation::DELETE;
   pop->opaque = opaque[level]++;
   pop->flags = flags;
@@ -887,7 +821,7 @@ int ConnectionMultiApprox::issue_delete(const char* key, double now, uint32_t fl
   return 1;
 }
 
-void ConnectionMultiApprox::issue_noop(double now, int level) {
+void ConnectionMulti::issue_noop(double now, int level) {
    struct evbuffer *output = NULL;
    switch (level) {
        case 1:
@@ -913,67 +847,7 @@ void ConnectionMultiApprox::issue_noop(double now, int level) {
 /**
  * Issue a set request to the server.
  */
-int ConnectionMultiApprox::issue_set(Operation *pop, const char* value, double now, uint32_t flags) {
-  
-  struct evbuffer *output = NULL;
-  int level = 0;
-  int length = pop->valuelen;
-  switch (FLAGS_level(flags)) {
-      case 1:
-          level = 1;
-          output = bufferevent_get_output(bev1);
-          break;
-      case 2:
-          level = 2;
-          output = bufferevent_get_output(bev2);
-          break;
-  }
-
-#if HAVE_CLOCK_GETTIME
-  pop->start_time = get_time_accurate();
-#else
-  if (now == 0.0) pop->start_time = get_time();
-  else pop->start_time = now;
-#endif
-
-  pop->opaque = opaque[level]++;
-  pop->flags = flags;
-  op_queue[level][pop->opaque] = pop;
-  //op_queue[level].push(op);
-  op_queue_size[level]++;
-#ifdef DEBUGS
-  fprintf(stderr,"cid: %d issing set: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,key,length,level,flags,pop->opaque);
-#endif
-  
-  if (opaque[level] > OPAQUE_MAX) {
-      opaque[level] = 1;
-  }
-
-  uint16_t keylen = strlen(pop->key);
-
-  // each line is 4-bytes
-  binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, htons(0),
-                        htonl(keylen + 8 + length) }; 
-  h.opaque = htonl(pop->opaque);
-  
-  uint32_t f = htonl(flags);
-  uint32_t exp = 0;
-  
-  evbuffer_add(output, &h, 24);
-  evbuffer_add(output, &f, 4);
-  evbuffer_add(output, &exp, 4);
-  evbuffer_add(output, pop->key, keylen);
-  evbuffer_add(output, value, length);
-
-  stats.tx_bytes += length + 32 + keylen;
-  return 1;
-}
-
-/**
- * Issue a set request to the server.
- */
-int ConnectionMultiApprox::issue_set(const char* key, const char* value, int length, double now, uint32_t flags) {
+int ConnectionMulti::issue_set(const char* key, const char* value, int length, double now, uint32_t flags) {
   
   struct evbuffer *output = NULL;
   int level = 0;
@@ -997,7 +871,8 @@ int ConnectionMultiApprox::issue_set(const char* key, const char* value, int len
   else pop->start_time = now;
 #endif
 
-  strncpy(pop->key,key,255); 
+  
+  pop->key = string(key);
   pop->valuelen = length;
   pop->type = Operation::SET;
   pop->opaque = opaque[level]++;
@@ -1038,7 +913,7 @@ int ConnectionMultiApprox::issue_set(const char* key, const char* value, int len
 /**
  * Return the oldest live operation in progress.
  */
-void ConnectionMultiApprox::pop_op(Operation *op) {
+void ConnectionMulti::pop_op(Operation *op) {
 
   uint8_t level = OP_level(op);
   //op_queue[level].erase(op);
@@ -1064,7 +939,7 @@ void ConnectionMultiApprox::pop_op(Operation *op) {
  * Finish up (record stats) an operation that just returned from the
  * server.
  */
-void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
+void ConnectionMulti::finish_op(Operation *op, int was_hit) {
   double now;
 #if USE_CACHED_TIME
   struct timeval now_tv;
@@ -1079,7 +954,7 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
   op->end_time = now;
 #endif
 
-  if (was_hit) { 
+  if (options.successful_queries && was_hit) { 
     switch (op->type) {
     case Operation::GET: 
         switch (OP_level(op)) {
@@ -1088,10 +963,6 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
                 break;
             case 2:
                 stats.log_get_l2(*op);
-                if (op->l1 != NULL) {
-                    op->l1->end_time = now;
-                    stats.log_get(*(op->l1));
-                }
                 break;
         }
         break;
@@ -1109,57 +980,54 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
     case Operation::TOUCH: break;
     default: DIE("Not implemented.");
     }
+  } else {
+    switch (op->type) {
+    case Operation::GET: 
+        if (OP_log(op)) {
+            switch (OP_level(op)) {
+                case 1:
+                    stats.log_get_l1(*op);
+                    break;
+                case 2:
+                    stats.log_get_l2(*op);
+                    if (op->l1 != NULL) {
+                        op->l1->end_time = now;
+                        stats.log_get(*(op->l1));
+                    }
+                    break;
+            }
+        }
+        break;
+    case Operation::SET:
+        if (OP_log(op)) {
+            switch (OP_level(op)) {
+                case 1:
+                    stats.log_set_l1(*op);
+                    break;
+                case 2:
+                    stats.log_set_l2(*op);
+                    break;
+            }
+        }
+        break;
+    case Operation::DELETE: break;
+    case Operation::TOUCH: break;
+    default: DIE("Not implemented.");
+    }
   }
-  //} else {
-  //  switch (op->type) {
-  //  case Operation::GET: 
-  //      if (OP_log(op)) {
-  //          switch (OP_level(op)) {
-  //              case 1:
-  //                  stats.log_get_l1(*op);
-  //                  break;
-  //              case 2:
-  //                  stats.log_get_l2(*op);
-  //                  if (op->l1 != NULL) {
-  //                      op->l1->end_time = now;
-  //                      stats.log_get(*(op->l1));
-  //                  }
-  //                  break;
-  //          }
-  //      }
-  //      break;
-  //  case Operation::SET:
-  //      if (OP_log(op)) {
-  //          switch (OP_level(op)) {
-  //              case 1:
-  //                  stats.log_set_l1(*op);
-  //                  break;
-  //              case 2:
-  //                  stats.log_set_l2(*op);
-  //                  break;
-  //          }
-  //      }
-  //      break;
-  //  case Operation::DELETE: break;
-  //  case Operation::TOUCH: break;
-  //  default: DIE("Not implemented.");
-  //  }
-  //}
 
   last_rx = now;
   uint8_t level = OP_level(op);
   if (op->l1 != NULL) {
-      //delete op_queue[1][op->l1->opaque];
+      delete op_queue[1][op->l1->opaque];
       op_queue[1][op->l1->opaque] = 0;
       op_queue_size[1]--;
-      delete op->l1;
   }
   //op_queue[level].erase(op_queue[level].begin()+opopq);
   if (op == op_queue[level][op->opaque] && 
           op->opaque == op_queue[level][op->opaque]->opaque) {
-    //delete op_queue[level][op->opaque];
+    delete op_queue[level][op->opaque];
     op_queue[level][op->opaque] = 0;
-    delete op;
   } else {
       fprintf(stderr,"op_queue out of sync! Expected %p, got %p, opa1: %d opaq2: %d\n",
               op,op_queue[level][op->opaque],op->opaque,op_queue[level][op->opaque]->opaque);
@@ -1175,7 +1043,7 @@ void ConnectionMultiApprox::finish_op(Operation *op, int was_hit) {
 /**
  * Check if our testing is done and we should exit.
  */
-bool ConnectionMultiApprox::check_exit_condition(double now) {
+bool ConnectionMulti::check_exit_condition(double now) {
   if (eof && op_queue_size[1] == 0 && op_queue_size[2] == 0) {
       return true;
   }
@@ -1187,7 +1055,7 @@ bool ConnectionMultiApprox::check_exit_condition(double now) {
 /**
  * Handle new connection and error events.
  */
-void ConnectionMultiApprox::event_callback1(short events) {
+void ConnectionMulti::event_callback1(short events) {
   if (events & BEV_EVENT_CONNECTED) {
     D("Connected to %s:%s.", hostname1.c_str(), port.c_str());
     int fd = bufferevent_getfd(bev1);
@@ -1222,7 +1090,7 @@ void ConnectionMultiApprox::event_callback1(short events) {
 /**
  * Handle new connection and error events.
  */
-void ConnectionMultiApprox::event_callback2(short events) {
+void ConnectionMulti::event_callback2(short events) {
   if (events & BEV_EVENT_CONNECTED) {
     D("Connected to %s:%s.", hostname2.c_str(), port.c_str());
     int fd = bufferevent_getfd(bev2);
@@ -1261,7 +1129,7 @@ void ConnectionMultiApprox::event_callback2(short events) {
  *
  * Note that this function loops. Be wary of break vs. return.
  */
-void ConnectionMultiApprox::drive_write_machine(double now) {
+void ConnectionMulti::drive_write_machine(double now) {
   if (now == 0.0) now = get_time();
 
   double delay;
@@ -1329,7 +1197,7 @@ void ConnectionMultiApprox::drive_write_machine(double now) {
  * @param input evBuffer to read response from
  * @return  true if consumed, false if not enough data in buffer.
  */
-static bool handle_response(ConnectionMultiApprox *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque, evicted_t *evict, int level) {
+static bool handle_response(ConnectionMulti *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque, evicted_t *evict, int level) {
   // Read the first 24 bytes as a header
   int length = evbuffer_get_length(input);
   if (length < 24) return false;
@@ -1426,7 +1294,7 @@ static bool handle_response(ConnectionMultiApprox *conn, evbuffer *input, bool &
 /**
  * Handle incoming data (responses).
  */
-void ConnectionMultiApprox::read_callback1() {
+void ConnectionMulti::read_callback1() {
   struct evbuffer *input = bufferevent_get_input(bev1);
 
   Operation *op = NULL;
@@ -1467,10 +1335,10 @@ void ConnectionMultiApprox::read_callback1() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (strlen(op->key) < 1) {
+        if (op->key.length() < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key);
+            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key.c_str());
             write(2,out2,strlen(out2));
 #endif
             if (evict->evictedKey) free(evict->evictedKey);
@@ -1496,24 +1364,21 @@ void ConnectionMultiApprox::read_callback1() {
     switch (op->type) {
         case Operation::GET:
             if (done) {
-
-                int vl = op->valuelen;
                 if ( !found && (options.getset || options.getsetorset) ) {
                     /* issue a get a l2 */
+                    char key[256];
+                    memset(key,0,256);
+                    strncpy(key, op->key.c_str(),255);
+                    int vl = op->valuelen;
                     int flags = OP_clu(op);
-                    issue_get_with_len(op->key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
+                    issue_get_with_len(key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
                     op->end_time = now;
                     this->stats.log_get_l1(*op);
                     //finish_op(op,0);
 
                 } else {
-                    if (OP_incl(op) && ghits >= gloc) {
-                        issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
-                        gloc += rand()%(100*2-1)+1;
-                    }
-                    ghits++;
-                    //del_wb_keys(op->key);
-                    finish_op(op,1);
+                    del_wb_keys(op->key);
+                    finish_op(op,found);
                 }
             } else {
                 char out[128];
@@ -1529,16 +1394,18 @@ void ConnectionMultiApprox::read_callback1() {
             if (evict->evicted) {
                 string wb_key(evict->evictedKey);
                 if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
+                    //wb_keys.push_back(wb_key);
                     int ret = add_to_wb_keys(wb_key);
                     if (ret == 1) {
-                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB | ITEM_DIRTY);
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB);
                     }
+                    //fprintf(stderr,"incl writeback %s\n",evict->evictedKey);
                     this->stats.incl_wbs++;
                 } else if (evict->evictedFlags & ITEM_EXCL) {
                     //fprintf(stderr,"excl writeback %s\n",evict->evictedKey);
                     //strncpy(wb_key,evict->evictedKey,255);
                     if ( (options.rand_admit && wb == 0) ||
-                         (options.threshold && (g_key_hist[wb_key] == 1)) ||
+                         (options.threshold && (key_hist[wb_key] == 1)) ||
                          (options.wb_all) ) {
                         int ret = add_to_wb_keys(wb_key);
                         if (ret == 1) {
@@ -1570,14 +1437,14 @@ void ConnectionMultiApprox::read_callback1() {
                     }
                 }
             }
-            //del_wb_keys(op->key);
+            del_wb_keys(op->key);
             finish_op(op,1);
             break;
         case Operation::TOUCH:
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
             DIE("not implemented");
     }
 
@@ -1615,7 +1482,7 @@ void ConnectionMultiApprox::read_callback1() {
 /**
  * Handle incoming data (responses).
  */
-void ConnectionMultiApprox::read_callback2() {
+void ConnectionMulti::read_callback2() {
   struct evbuffer *input = bufferevent_get_input(bev2);
 
   Operation *op = NULL;
@@ -1651,10 +1518,10 @@ void ConnectionMultiApprox::read_callback2() {
         write(2,out,strlen(out));
         output_op(op,2,found);
 #endif
-        if (strlen(op->key) < 1) {
+        if (op->key.length() < 1) {
 #ifdef DEBUGMC
             char out2[128];
-            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key);
+            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key.c_str());
             write(2,out2,strlen(out2));
 #endif
             continue;
@@ -1670,15 +1537,18 @@ void ConnectionMultiApprox::read_callback2() {
             if (done) {
                 if ( !found && (options.getset || options.getsetorset) ) {//  &&
                     //(options.twitter_trace != 1)) {
+                    char key[256];
+                    memset(key,0,256);
+                    strncpy(key, op->key.c_str(),255);
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
-                    issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
+                    issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L1);
                     //wb_keys.push_back(op->key);
                     last_quiet1 = false; 
                     if (OP_incl(op)) {
                         //wb_keys.push_back(op->key);
-                        issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
+                        issue_set(key, &random_char[index], valuelen, now, flags | ITEM_L2);
                         last_quiet2 = false; 
                     }
                     //pthread_mutex_lock(lock);
@@ -1692,16 +1562,18 @@ void ConnectionMultiApprox::read_callback2() {
                     
                 } else {
                     if (found) {
+                        char key[256];
+                        memset(key,0,256);
+                        strncpy(key, op->key.c_str(),255);
                         int valuelen = op->valuelen;
                         int index = lrand48() % (1024 * 1024);
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
                         //found in l2, set in l1
                         //wb_keys.push_back(op->key);
-                        issue_set(op->key, &random_char[index],valuelen, now, flags);
+                        issue_set(key, &random_char[index],valuelen, now, flags);
                         this->stats.copies_to_l1++;
-                        //djb: this is automatically done in the L2 server
-                        //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?
-                        //    issue_delete(op->key,now, ITEM_L2 | SRC_L1_COPY );
+                        //if (OP_excl(op)) {
+                        //    issue_delete(key,now, ITEM_L2 | SRC_L1_COPY );
                         //}
                         finish_op(op,1);
 
@@ -1717,11 +1589,48 @@ void ConnectionMultiApprox::read_callback2() {
             break;
         case Operation::SET:
             if (OP_src(op) == SRC_WB) {
-                del_wb_keys(string(op->key));
+                del_wb_keys(op->key);
             }
             finish_op(op,1);
             break;
         case Operation::TOUCH:
+            if (OP_src(op) == SRC_DIRECT_SET) {
+                char key[256];
+                memset(key,0,256);
+                strncpy(key, op->key.c_str(),255);
+                int valuelen = op->valuelen;
+                if (!found) {
+                    int index = lrand48() % (1024 * 1024);
+                    //int ret = add_to_wb_keys(op->key+"l2");
+                    //if (ret == 1) {
+                    issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP | SRC_L2_M);
+                    //}
+                    this->stats.set_misses_l2++;
+                } else {
+                    issue_touch(key,valuelen,now, ITEM_L1 | SRC_L2_H | ITEM_DIRTY);
+                }
+            }
+            //if (!found) {
+            //    //int incl = op->incl;
+            //    //int flags = 0;
+            //    //SET_INCL(incl,flags);
+            //    //// not found in l2, set in l2
+            //    char key[256];
+            //    memset(key,0,256);
+            //    strncpy(key, op->key.c_str(),255);
+            //    int valuelen = op->valuelen;
+            //    int index = lrand48() % (1024 * 1024);
+            //    if (OP_src(op) == SRC_DIRECT_SET) {
+            //        issue_set(key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP);
+            //        this->stats.set_misses_l2++;
+            //    }
+            //    //if (OP_src(op) == SRC_L1_H) {
+            //    //    fprintf(stderr,"expected op in l2: %s\n",key);
+            //    //}
+            //    finish_op(op,0);
+            //} else {
+            //    finish_op(op,1);
+            //}
             finish_op(op,0);
             break;
         case Operation::DELETE:
@@ -1737,7 +1646,7 @@ void ConnectionMultiApprox::read_callback2() {
             finish_op(op,1);
             break;
         default: 
-            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key.c_str(),op->opaque);
             DIE("not implemented");
     }
 
@@ -1765,7 +1674,7 @@ void ConnectionMultiApprox::read_callback2() {
 /**
  * Callback called when write requests finish.
  */
-void ConnectionMultiApprox::write_callback() {
+void ConnectionMulti::write_callback() {
 
     //fprintf(stderr,"loaded evbuffer with ops: %u\n",op_queue.size());
 }
@@ -1773,42 +1682,42 @@ void ConnectionMultiApprox::write_callback() {
 /**
  * Callback for timer timeouts.
  */
-void ConnectionMultiApprox::timer_callback() {
+void ConnectionMulti::timer_callback() {
   //fprintf(stderr,"timer up: %d\n",cid);
   drive_write_machine();
 }
 
 
 /* The follow are C trampolines for libevent callbacks. */
-void bev_event_cb1_approx(struct bufferevent *bev, short events, void *ptr) {
+void bev_event_cb1(struct bufferevent *bev, short events, void *ptr) {
 
-  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->event_callback1(events);
 }
 
 /* The follow are C trampolines for libevent callbacks. */
-void bev_event_cb2_approx(struct bufferevent *bev, short events, void *ptr) {
+void bev_event_cb2(struct bufferevent *bev, short events, void *ptr) {
 
-  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->event_callback2(events);
 }
 
-void bev_read_cb1_approx(struct bufferevent *bev, void *ptr) {
-  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
+void bev_read_cb1(struct bufferevent *bev, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->read_callback1();
 }
 
 
-void bev_read_cb2_approx(struct bufferevent *bev, void *ptr) {
-  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
+void bev_read_cb2(struct bufferevent *bev, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->read_callback2();
 }
 
-void bev_write_cb_m_approx(struct bufferevent *bev, void *ptr) {
+void bev_write_cb_m(struct bufferevent *bev, void *ptr) {
 }
 
-void timer_cb_m_approx(evutil_socket_t fd, short what, void *ptr) {
-  ConnectionMultiApprox* conn = (ConnectionMultiApprox*) ptr;
+void timer_cb_m(evutil_socket_t fd, short what, void *ptr) {
+  ConnectionMulti* conn = (ConnectionMulti*) ptr;
   conn->timer_callback();
 }
 
