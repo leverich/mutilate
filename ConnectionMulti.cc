@@ -302,7 +302,7 @@ void ConnectionMulti::set_lock(pthread_mutex_t* a_lock) {
     lock = a_lock;
 }
 
-void ConnectionMulti::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
+void ConnectionMulti::set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys) {
     g_wb_keys = a_wb_keys;
 }
 
@@ -315,7 +315,7 @@ int ConnectionMulti::add_to_wb_keys(string key) {
     pthread_mutex_lock(lock);
     auto pos = g_wb_keys->find(key);
     if (pos == g_wb_keys->end()) {
-        g_wb_keys->insert( {key,cid });
+        g_wb_keys->insert( {key, vector<Operation*>() });
         ret = 1;
         //fprintf(stderr,"----set: %s----\n",Op.key.c_str());
         //for (auto iter = g_wb_keys->begin(); iter != g_wb_keys->end(); ++iter){
@@ -515,7 +515,7 @@ int ConnectionMulti::issue_getsetorset(double now) {
             }
             return 1;
         } else {
-            g_wb_keys->insert( {Op.key, cid} );
+            //g_wb_keys->insert( {Op.key, cid} );
             //g_wb_keys->insert( {Op.key+"l2", cid} );
         }
         pthread_mutex_unlock(lock);

@@ -269,7 +269,9 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   last_tx = last_rx = 0.0;
   gets = 0;
   ghits = 0;
+  esets = 0;
   gloc = rand() % (100*2-1)+1;
+  sloc = rand() % (100*2-1)+1;
 
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
@@ -310,7 +312,7 @@ void ConnectionMultiApprox::set_lock(pthread_mutex_t* a_lock) {
     lock = a_lock;
 }
 
-void ConnectionMultiApprox::set_g_wbkeys(unordered_map<string,int> *a_wb_keys) {
+void ConnectionMultiApprox::set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys) {
     g_wb_keys = a_wb_keys;
 }
 
@@ -323,7 +325,7 @@ int ConnectionMultiApprox::add_to_wb_keys(string key) {
     pthread_mutex_lock(lock);
     auto pos = g_wb_keys->find(key);
     if (pos == g_wb_keys->end()) {
-        g_wb_keys->insert( {key,cid });
+        g_wb_keys->insert( {key, vector<Operation*>() });
         ret = 1;
         //fprintf(stderr,"----set: %s----\n",Op.key.c_str());
         //for (auto iter = g_wb_keys->begin(); iter != g_wb_keys->end(); ++iter){
@@ -338,11 +340,80 @@ int ConnectionMultiApprox::add_to_wb_keys(string key) {
     return ret;
 }
 
+int ConnectionMultiApprox::add_to_copy_keys(string key, const char *data) {
+    int ret = -1;
+    auto pos = copy_kes->find(key);
+    if (pos == copy_keys->end()) {
+        copy_keys->insert( {key, vector<Operation*>() });
+        return 1;
+    }
+    return 2;
+}
+
+int ConnectionMultiApprox::issue_op(Operation *Op) {
+    double now = get_time();
+    int issued = 0;
+    int incl = get_incl(Op->valuelen,strlen(Op->key));
+    int cid = get_class(Op->valuelen,strlen(Op->key));
+    Op->clsid = cid;
+    int flags = 0;
+    int index = lrand48() % (1024 * 1024);
+    //int touch = 1;
+    SET_INCL(incl,flags);
+    
+    switch(Op->type)
+    {
+      case Operation::GET:
+          //if (nissued < options.depth-1) {
+          //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
+          //  last_quiet1 = false;
+          //} else {
+          //}
+          issued = issue_get_with_len(Op, now, false, flags | LOG_OP | ITEM_L1);
+          last_quiet1 = false;
+          this->stats.gets++;
+          gets++;
+          this->stats.gets_cid[cid]++;
+    
+          break;
+    case Operation::SET:
+          if (last_quiet1) {
+              issue_noop(now,1);
+          }
+          if (incl == 1) {
+            issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
+          } else if (incl == 2) {
+            issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
+            if (esets >= sloc) {
+                issue_delete(Op->key,now,ITEM_L2 | SRC_DIRECT_SET);
+                sloc += rand()%(100*2-1)+1;
+            }
+            esets++;
+          }
+          last_quiet1 = false;
+          this->stats.sets++;
+          this->stats.sets_cid[cid]++;
+          break;
+    case Operation::DELETE:
+    case Operation::TOUCH:
+    case Operation::NOOP:
+    case Operation::SASL:
+          fprintf(stderr,"invalid line: %s, vl: %d\n",Op->key,Op->valuelen);
+          break;
+    
+    }
+    return issued;
+}
+
 void ConnectionMultiApprox::del_wb_keys(string key) {
 
     pthread_mutex_lock(lock);
     auto position = g_wb_keys->find(key);
     if (position != g_wb_keys->end()) {
+        vector<Operation*> op_list = position->second;
+        for (auto it = op_list.begin(); it != op_list.end(); ++it) {
+            issue_op(*it);
+        }
         g_wb_keys->erase(position);
     } else {
         fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
@@ -490,8 +561,8 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
 
                 if (options.ratelimit && percent > min_percent+2) {
                     struct timeval tv;
-                    tv.tv_sec = 1;
-                    tv.tv_usec = 0;
+                    tv.tv_sec = 0;
+                    tv.tv_usec = 100;
                     int good = 0;
                     if (!event_pending(timer, EV_TIMEOUT, NULL)) {
                         good = evtimer_add(timer, &tv);
@@ -509,83 +580,39 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
                 //fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
                 o_percent = percent;
             }
+            
+            trace_queue->pop();
 
             pthread_mutex_lock(lock);
             auto check = g_wb_keys->find(string(Op->key));
             if (check != g_wb_keys->end()) {
+                check->second.push_back(Op);
                 pthread_mutex_unlock(lock);
-                struct timeval tv;
-                double delay; 
-                delay = last_rx + 0.00025 - now;
-                double_to_tv(delay,&tv);
-                int good = 0;
-                //if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                good = evtimer_add(timer, &tv);
+                //pthread_mutex_unlock(lock);
+                //struct timeval tv;
+                //double delay; 
+                //delay = last_rx + 0.00025 - now;
+                //double_to_tv(delay,&tv);
+                //int good = 0;
+                ////if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+                //good = evtimer_add(timer, &tv);
+                ////}
+                //if (good != 0) {
+                //    fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op->key);
+                //    return 2;
                 //}
-                if (good != 0) {
-                    fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op->key);
-                    return 2;
-                }
-                return 1;
+                //return 1;
             } else {
                 pthread_mutex_unlock(lock);
+                int issued = issue_op(Op);
+                if (issued) {
+                    nissued++;
+                    total++;
+                } else {
+                    fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
+                }
             }
 
-            
-
-            trace_queue->pop();
-
-            int issued = 0;
-            int incl = get_incl(Op->valuelen,strlen(Op->key));
-            int cid = get_class(Op->valuelen,strlen(Op->key));
-            Op->clsid = cid;
-            int flags = 0;
-            int index = lrand48() % (1024 * 1024);
-            //int touch = 1;
-            SET_INCL(incl,flags);
-            
-            switch(Op->type)
-            {
-              case Operation::GET:
-                  //if (nissued < options.depth-1) {
-                  //  issued = issue_get_with_len(key, vl, now, false, 1, flags, 0, 1);
-                  //  last_quiet1 = false;
-                  //} else {
-                  //}
-                  issued = issue_get_with_len(Op, now, false, flags | LOG_OP | ITEM_L1);
-                  last_quiet1 = false;
-                  this->stats.gets++;
-                  gets++;
-                  this->stats.gets_cid[cid]++;
-
-                  break;
-            case Operation::SET:
-                  if (last_quiet1) {
-                      issue_noop(now,1);
-                  }
-                  if (incl == 1) {
-                    issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
-                  } else if (incl == 2) {
-                    issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
-                  }
-                  last_quiet1 = false;
-                  this->stats.sets++;
-                  this->stats.sets_cid[cid]++;
-                  break;
-            case Operation::DELETE:
-            case Operation::TOUCH:
-            case Operation::NOOP:
-            case Operation::SASL:
-                  fprintf(stderr,"invalid line: %s, vl: %d\n",Op->key,Op->valuelen);
-                  break;
-            
-            }
-            if (issued) {
-                nissued++;
-                total++;
-            } else {
-                fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
-            }
         } else {
             return 1;
         }
@@ -1262,8 +1289,8 @@ void ConnectionMultiApprox::event_callback2(short events) {
  * Note that this function loops. Be wary of break vs. return.
  */
 void ConnectionMultiApprox::drive_write_machine(double now) {
-  if (now == 0.0) now = get_time();
 
+  if (now == 0.0) now = get_time();
   double delay;
   struct timeval tv;
 
@@ -1697,7 +1724,13 @@ void ConnectionMultiApprox::read_callback2() {
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
                         //found in l2, set in l1
                         //wb_keys.push_back(op->key);
-                        issue_set(op->key, &random_char[index],valuelen, now, flags);
+                        //add this key to the list of keys currently being copied
+                        string key = string(op->key);
+                        const char *data = &random_char[index];
+                        int ret = add_to_copy_keys(string(op->key));
+                        if (ret == 1) {
+                            issue_set(op->key,data,valuelen, now, flags);
+                        }
                         this->stats.copies_to_l1++;
                         //djb: this is automatically done in the L2 server
                         //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?

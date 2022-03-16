@@ -89,7 +89,7 @@ struct thread_data {
   std::vector<queue<Operation*>*> *trace_queue;
   //std::vector<pthread_mutex_t*> *mutexes;
   pthread_mutex_t* g_lock;
-  std::unordered_map<string,int> *g_wb_keys;
+  std::unordered_map<string,vector<Operation*>> *g_wb_keys;
 };
 
 struct reader_data {
@@ -120,7 +120,7 @@ void go(const vector<string> &servers, options_t &options,
 //void do_mutilate(const vector<string> &servers, options_t &options,
 //                 ConnectionStats &stats,std::vector<ConcurrentQueue<string>*> trace_queue,  bool master = true
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats,std::vector<queue<Operation*>*> *trace_queue, pthread_mutex_t *g_lock, unordered_map<string,int> *g_wb_keys,  bool master = true
+                 ConnectionStats &stats,std::vector<queue<Operation*>*> *trace_queue, pthread_mutex_t *g_lock, unordered_map<string,vector<Operation*>> *g_wb_keys,  bool master = true
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socketz = NULL
 #endif
@@ -753,7 +753,7 @@ void go(const vector<string>& servers, options_t& options,
   pthread_mutex_t *g_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t)); 
   *g_lock = PTHREAD_MUTEX_INITIALIZER;
 
-  unordered_map<string,int> *g_wb_keys = new unordered_map<string,int>();
+  unordered_map<string,vector<Operation*>> *g_wb_keys = new unordered_map<string,vector<Operation*>>();
 
   for (int i = 0; i <= options.apps; i++) {
   //    //trace_queue.push_back(new ConcurrentQueue<string>(2000000));
@@ -1322,7 +1322,7 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, vector<queue<Operation*>*> *trace_queue, pthread_mutex_t* g_lock, unordered_map<string,int> *g_wb_keys, bool master 
+                 ConnectionStats& stats, vector<queue<Operation*>*> *trace_queue, pthread_mutex_t* g_lock, unordered_map<string,vector<Operation*>> *g_wb_keys, bool master 
 #ifdef HAVE_LIBZMQ
 , zmq::socket_t* socketz
 #endif

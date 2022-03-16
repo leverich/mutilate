@@ -222,7 +222,7 @@ public:
   //void set_queue(ConcurrentQueue<string> *a_trace_queue);
   int  add_to_wb_keys(string wb_key);
   void  del_wb_keys(string wb_key);
-  void set_g_wbkeys(unordered_map<string,int> *a_wb_keys);
+  void set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys);
   void set_queue(queue<Operation*> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
 
@@ -290,7 +290,7 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
   pthread_mutex_t* lock;
-  unordered_map<string,int> *g_wb_keys;
+  unordered_map<string,vector<Operation*>> *g_wb_keys;
   queue<Operation*> *trace_queue;
 
   // state machine functions / event processing
@@ -362,7 +362,7 @@ public:
   //void set_queue(ConcurrentQueue<string> *a_trace_queue);
   int  add_to_wb_keys(string wb_key);
   void  del_wb_keys(string wb_key);
-  void set_g_wbkeys(unordered_map<string,int> *a_wb_keys);
+  void set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys);
   void set_queue(queue<Operation*> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
 
@@ -421,6 +421,8 @@ private:
   uint32_t gets;
   uint32_t gloc;
   uint32_t ghits;
+  uint32_t sloc;
+  uint32_t esets;
   
   //std::vector<std::queue<Operation>> op_queue;
   Operation ***op_queue;
@@ -432,7 +434,7 @@ private:
   KeyGenerator *keygen;
   Generator *iagen;
   pthread_mutex_t* lock;
-  unordered_map<string,int> *g_wb_keys;
+  unordered_map<string,vector<Operation*>> *g_wb_keys;
   queue<Operation*> *trace_queue;
 
   // state machine functions / event processing
@@ -445,6 +447,7 @@ private:
 
   // request functions
   void issue_sasl();
+  int issue_op(Operation* op);
   void issue_noop(double now = 0.0, int level = 1);
   int issue_touch(const char* key, int valuelen, double now, int level);
   int issue_delete(const char* key, double now, uint32_t flags);
