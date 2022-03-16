@@ -340,14 +340,28 @@ int ConnectionMultiApprox::add_to_wb_keys(string key) {
     return ret;
 }
 
-int ConnectionMultiApprox::add_to_copy_keys(string key, const char *data) {
-    int ret = -1;
-    auto pos = copy_kes->find(key);
-    if (pos == copy_keys->end()) {
-        copy_keys->insert( {key, vector<Operation*>() });
+int ConnectionMultiApprox::add_to_copy_keys(string key) {
+    auto pos = copy_keys.find(key);
+    if (pos == copy_keys.end()) {
+        copy_keys.insert( {key, vector<Operation*>() });
         return 1;
     }
     return 2;
+}
+
+
+void ConnectionMultiApprox::del_copy_keys(string key) {
+
+    auto position = copy_keys.find(key);
+    if (position != copy_keys.end()) {
+        vector<Operation*> op_list = position->second;
+        for (auto it = op_list.begin(); it != op_list.end(); ++it) {
+            issue_op(*it);
+        }
+        copy_keys.erase(position);
+    } else {
+        fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
+    }
 }
 
 int ConnectionMultiApprox::issue_op(Operation *Op) {
@@ -583,11 +597,11 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
             
             trace_queue->pop();
 
-            pthread_mutex_lock(lock);
-            auto check = g_wb_keys->find(string(Op->key));
-            if (check != g_wb_keys->end()) {
-                check->second.push_back(Op);
-                pthread_mutex_unlock(lock);
+            //pthread_mutex_lock(lock);
+            //auto check = g_wb_keys->find(string(Op->key));
+            //if (check != g_wb_keys->end()) {
+            //    check->second.push_back(Op);
+            //    pthread_mutex_unlock(lock);
                 //pthread_mutex_unlock(lock);
                 //struct timeval tv;
                 //double delay; 
@@ -602,16 +616,16 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
                 //    return 2;
                 //}
                 //return 1;
+            //} else {
+                //pthread_mutex_unlock(lock);
+            int issued = issue_op(Op);
+            if (issued) {
+                nissued++;
+                total++;
             } else {
-                pthread_mutex_unlock(lock);
-                int issued = issue_op(Op);
-                if (issued) {
-                    nissued++;
-                    total++;
-                } else {
-                    fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
-                }
+                fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
             }
+            //}
 
         } else {
             return 1;
@@ -680,6 +694,13 @@ int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool q
   //if (read_state == IDLE) read_state = WAITING_FOR_GET;
   uint16_t keylen = strlen(pop->key);
 
+  //check if op is in copy_keys (currently going to L1)
+  auto pos = copy_keys.find(string(pop->key));
+  if (pos != copy_keys.end()) {
+      pos->second.push_back(pop);
+      return 1;
+  } 
+
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_GET, htons(keylen),
                         0x00, 0x00, htons(0),
@@ -688,7 +709,8 @@ int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool q
       h.opcode = CMD_GETQ;
   }
   h.opaque = htonl(pop->opaque);
-  
+ 
+
   evbuffer_add(output, &h, 24);
   evbuffer_add(output, pop->key, keylen);
 
@@ -977,6 +999,13 @@ int ConnectionMultiApprox::issue_set(Operation *pop, const char* value, double n
   }
 
   uint16_t keylen = strlen(pop->key);
+  
+  //check if op is in copy_keys (currently going to L1)
+  auto pos = copy_keys.find(string(pop->key));
+  if (pos != copy_keys.end()) {
+      pos->second.push_back(pop);
+      return 1;
+  } 
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_SET, htons(keylen),
@@ -1539,7 +1568,6 @@ void ConnectionMultiApprox::read_callback1() {
                         gloc += rand()%(100*2-1)+1;
                     }
                     ghits++;
-                    //del_wb_keys(op->key);
                     finish_op(op,1);
                 }
             } else {
@@ -1549,17 +1577,16 @@ void ConnectionMultiApprox::read_callback1() {
             }
             break;
         case Operation::SET:
-            //if (OP_src(op) == SRC_L1_COPY || 
-            //    OP_src(op) == SRC_DIRECT_SET ||  
-            //    OP_src(op) == SRC_L2_M ) {
-            //}
+            if (OP_src(op) == SRC_L1_COPY) {
+                del_copy_keys(string(op->key));
+            }
             if (evict->evicted) {
                 string wb_key(evict->evictedKey);
                 if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
-                    int ret = add_to_wb_keys(wb_key);
-                    if (ret == 1) {
+                    //int ret = add_to_wb_keys(wb_key);
+                    //if (ret == 1) {
                         issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB | ITEM_DIRTY);
-                    }
+                    //}
                     this->stats.incl_wbs++;
                 } else if (evict->evictedFlags & ITEM_EXCL) {
                     //fprintf(stderr,"excl writeback %s\n",evict->evictedKey);
@@ -1567,26 +1594,13 @@ void ConnectionMultiApprox::read_callback1() {
                     if ( (options.rand_admit && wb == 0) ||
                          (options.threshold && (g_key_hist[wb_key] == 1)) ||
                          (options.wb_all) ) {
-                        int ret = add_to_wb_keys(wb_key);
-                        if (ret == 1) {
+                        //int ret = add_to_wb_keys(wb_key);
+                        //if (ret == 1) {
                             issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_EXCL | LOG_OP | SRC_WB);
-                        }
+                        //}
                         this->stats.excl_wbs++;
                     }
                 }
-                /*
-                if (evict->serverFlags & ITEM_SIZE_CHANGE && OP_src(op) == SRC_DIRECT_SET) {
-                    char key[256];
-                    memset(key,0,256);
-                    strncpy(key, op->key.c_str(),255);
-                    if (evict->serverFlags & ITEM_INCL) {
-                        int index = lrand48() % (1024 * 1024);
-                        int valuelen = op->valuelen;
-                        //the item's size was changed, issue a SET to L2 as a new command
-                        issue_set(key, &random_char[index], valuelen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_L2_M);
-                    }
-                }
-                */
                 if (OP_src(op) == SRC_DIRECT_SET) {
                     if ( (evict->serverFlags & ITEM_SIZE_CHANGE) || ((evict->serverFlags & ITEM_WAS_HIT) == 0)) {
                         this->stats.set_misses_l1++;
@@ -1597,7 +1611,6 @@ void ConnectionMultiApprox::read_callback1() {
                     }
                 }
             }
-            //del_wb_keys(op->key);
             finish_op(op,1);
             break;
         case Operation::TOUCH:
@@ -1701,20 +1714,11 @@ void ConnectionMultiApprox::read_callback2() {
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
                     issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
-                    //wb_keys.push_back(op->key);
                     last_quiet1 = false; 
                     if (OP_incl(op)) {
-                        //wb_keys.push_back(op->key);
                         issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
                         last_quiet2 = false; 
                     }
-                    //pthread_mutex_lock(lock);
-                    //fprintf(stderr,"----miss: %s----\n",key);
-                    //for (auto iter = g_wb_keys->begin(); iter != g_wb_keys->end(); ++iter){
-                    //    fprintf(stderr,"%s,%d\n",iter->first.c_str(),iter->second);
-                    //}
-                    //fprintf(stderr,"----%d----\n",cid);
-                    //pthread_mutex_unlock(lock);
                     finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
@@ -1722,9 +1726,6 @@ void ConnectionMultiApprox::read_callback2() {
                         int valuelen = op->valuelen;
                         int index = lrand48() % (1024 * 1024);
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
-                        //found in l2, set in l1
-                        //wb_keys.push_back(op->key);
-                        //add this key to the list of keys currently being copied
                         string key = string(op->key);
                         const char *data = &random_char[index];
                         int ret = add_to_copy_keys(string(op->key));
@@ -1749,9 +1750,9 @@ void ConnectionMultiApprox::read_callback2() {
             }
             break;
         case Operation::SET:
-            if (OP_src(op) == SRC_WB) {
-                del_wb_keys(string(op->key));
-            }
+            //if (OP_src(op) == SRC_WB) {
+            //    del_wb_keys(string(op->key));
+            //}
             finish_op(op,1);
             break;
         case Operation::TOUCH:
