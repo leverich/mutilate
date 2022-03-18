@@ -270,8 +270,10 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   gets = 0;
   ghits = 0;
   esets = 0;
+  isets = 0;
   gloc = rand() % (100*2-1)+1;
   sloc = rand() % (100*2-1)+1;
+  iloc = rand() % (2*2-1)+1;
 
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
@@ -364,6 +366,30 @@ void ConnectionMultiApprox::del_copy_keys(string key) {
     }
 }
 
+int ConnectionMultiApprox::add_to_touch_keys(string key) {
+    auto pos = touch_keys.find(key);
+    if (pos == touch_keys.end()) {
+        touch_keys.insert( {key, vector<Operation*>() });
+        return 1;
+    }
+    return 2;
+}
+
+
+void ConnectionMultiApprox::del_touch_keys(string key) {
+
+    auto position = touch_keys.find(key);
+    if (position != touch_keys.end()) {
+        vector<Operation*> op_list = position->second;
+        for (auto it = op_list.begin(); it != op_list.end(); ++it) {
+            issue_op(*it);
+        }
+        touch_keys.erase(position);
+    } else {
+        fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
+    }
+}
+
 int ConnectionMultiApprox::issue_op(Operation *Op) {
     double now = get_time();
     int issued = 0;
@@ -395,7 +421,19 @@ int ConnectionMultiApprox::issue_op(Operation *Op) {
               issue_noop(now,1);
           }
           if (incl == 1) {
-            issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
+            //if (isets >= iloc) {
+            if (1) {
+                const char *data = &random_char[index];
+                issued = issue_set(Op, data, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
+                int ret = add_to_touch_keys(string(Op->key));
+                if (ret == 1) {
+                    issue_touch(Op->key,Op->valuelen,now, ITEM_L2 | SRC_DIRECT_SET);
+                }
+                iloc += rand()%(2*2-1)+1;
+            } else {
+                issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
+            }
+            isets++;
           } else if (incl == 2) {
             issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
             if (esets >= sloc) {
@@ -1563,8 +1601,11 @@ void ConnectionMultiApprox::read_callback1() {
                     //finish_op(op,0);
 
                 } else {
-                    if (OP_incl(op) && ghits >= gloc) {
-                        issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
+                    if (OP_incl(op)) { // && ghits >= gloc) {
+                        int ret = add_to_touch_keys(string(op->key));
+                        if (ret == 1) {
+                            issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
+                        }
                         gloc += rand()%(100*2-1)+1;
                     }
                     ghits++;
@@ -1577,7 +1618,8 @@ void ConnectionMultiApprox::read_callback1() {
             }
             break;
         case Operation::SET:
-            if (OP_src(op) == SRC_L1_COPY) {
+            if (OP_src(op) == SRC_L1_COPY ||
+                OP_src(op) == SRC_L2_M) {
                 del_copy_keys(string(op->key));
             }
             if (evict->evicted) {
@@ -1713,12 +1755,15 @@ void ConnectionMultiApprox::read_callback2() {
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
-                    issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
-                    last_quiet1 = false; 
-                    if (OP_incl(op)) {
-                        issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
-                        last_quiet2 = false; 
+                    int ret = add_to_copy_keys(string(op->key));
+                    if (ret == 1) {
+                        issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
+                        if (OP_incl(op)) {
+                            issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
+                            last_quiet2 = false; 
+                        }
                     }
+                    last_quiet1 = false; 
                     finish_op(op,0); // sets read_state = IDLE
                     
                 } else {
@@ -1756,6 +1801,19 @@ void ConnectionMultiApprox::read_callback2() {
             finish_op(op,1);
             break;
         case Operation::TOUCH:
+            if (OP_src(op) == SRC_DIRECT_SET || SRC_L1_H) {
+                int valuelen = op->valuelen;
+                if (!found) {
+                    int index = lrand48() % (1024 * 1024);
+                    issue_set(op->key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP | SRC_L2_M);
+                    this->stats.set_misses_l2++;
+                } else {
+                    if (OP_src(op) == SRC_DIRECT_SET) {
+                        issue_touch(op->key,valuelen,now, ITEM_L1 | SRC_L2_H | ITEM_DIRTY);
+                    }
+                }
+                del_touch_keys(string(op->key));
+            }
             finish_op(op,0);
             break;
         case Operation::DELETE:

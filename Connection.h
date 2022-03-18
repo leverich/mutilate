@@ -364,8 +364,10 @@ public:
   //void set_queue(ConcurrentQueue<string> *a_trace_queue);
   int  add_to_wb_keys(string wb_key);
   int  add_to_copy_keys(string key);
-  void  del_wb_keys(string wb_key);
-  void  del_copy_keys(string key);
+  int  add_to_touch_keys(string key);
+  void del_wb_keys(string wb_key);
+  void del_copy_keys(string key);
+  void del_touch_keys(string key);
   void set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys);
   void set_queue(queue<Operation*> *a_trace_queue);
   void set_lock(pthread_mutex_t* a_lock);
@@ -427,6 +429,8 @@ private:
   uint32_t ghits;
   uint32_t sloc;
   uint32_t esets;
+  uint32_t isets;
+  uint32_t iloc;
   
   //std::vector<std::queue<Operation>> op_queue;
   Operation ***op_queue;
@@ -440,6 +444,7 @@ private:
   pthread_mutex_t* lock;
   unordered_map<string,vector<Operation*>> *g_wb_keys;
   unordered_map<string,vector<Operation*>> copy_keys;
+  unordered_map<string,vector<Operation*>> touch_keys;
   queue<Operation*> *trace_queue;
 
   // state machine functions / event processing
