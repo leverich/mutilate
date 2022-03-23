@@ -12,6 +12,7 @@
 #include <event2/thread.h>
 #include <event2/util.h>
 
+
 #include "config.h"
 
 #include "Connection.h"
@@ -26,6 +27,9 @@
 #include <unistd.h>
 #include <string.h>
 #include "blockingconcurrentqueue.h"
+
+//#include <folly/concurrency/UnboundedQueue.h>
+//#include <folly/concurrency/ConcurrentHashMap.h>
 
 #define ITEM_L1 1
 #define ITEM_L2 2
@@ -86,8 +90,45 @@
 
 //#define DEBUGMC
 //#define DEBUGS
-
+//using namespace folly;
 using namespace moodycamel;
+//using namespace fmt;
+
+//struct node {
+//    long long addr,label;
+//    node *nxt;
+//    node(long long _addr = 0, long long _label = 0, node *_nxt = NULL)
+//         : addr(_addr),label(_label),nxt(_nxt) {}
+//};
+//
+//struct tnode {
+//    long long tm,offset; int size;
+//};//trace file data structure
+//
+//long long find(long long addr) {
+//    int t = addr%MAXH;
+//    node *tmp = hash[t],*pre = NULL;
+//    while (tmp) {
+//        if (tmp->addr == addr) {
+//            long long tlabel = tmp->label;
+//            if (pre == NULL) hash[t] = tmp->nxt;
+//            else pre->nxt = tmp->nxt;
+//            delete tmp;
+//            return tlabel;
+//        }
+//        pre = tmp;
+//        tmp = tmp->nxt;
+//    }
+//    return 0;
+//}
+//
+//void insert(long long addr )  {
+//    int t = addr%MAXH;
+//    node *tmp = new node(addr,n,hash[t]);
+//    hash[t] = tmp;
+//}
+
+
 
 pthread_mutex_t cid_lock_m_approx = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t connids_m = 1;
@@ -109,9 +150,6 @@ typedef struct _evicted_type {
     char *evictedData;
 } evicted_t;
 
-static vector<double> cid_rate;
-extern map<string,int> g_key_hist;
-extern int max_n[3];
 
 static void init_inclusives(char *inclusive_str) {
     int j = 1;
@@ -222,6 +260,19 @@ void ConnectionMultiApprox::output_op(Operation *op, int type, bool found) {
     write(2,output,strlen(output));
 }
 
+//extern USPMCQueue<Operation*,true,8,7> g_trace_queue;
+//static vector<double> cid_rate;
+//extern ConcurrentHashMap<int, double> cid_rate;
+extern unordered_map<int, double> cid_rate;
+//extern ConcurrentHashMap<string, vector<Operation*>> copy_keys;
+extern unordered_map<string, vector<Operation*>> copy_keys;
+extern unordered_map<string, int> touch_keys;
+extern unordered_map<string, vector<Operation*>> wb_keys;
+//extern ConcurrentHashMap<string, vector<Operation*>> wb_keys;
+
+extern map<string,int> g_key_hist;
+extern int max_n[3];
+
 /**
  * Create a new connection to a server endpoint.
  */
@@ -234,13 +285,10 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   pthread_mutex_lock(&cid_lock_m_approx);
   cid = connids_m++;
   if (cid == 1) {
-    cid_rate.push_back(100);
-    cid_rate.push_back(0);
     init_classes();
     init_inclusives(options.inclusives);
-  } else {
-    cid_rate.push_back(0);
   }
+  cid_rate.insert( { cid, 0 } );
   
   pthread_mutex_unlock(&cid_lock_m_approx);
   
@@ -271,9 +319,9 @@ ConnectionMultiApprox::ConnectionMultiApprox(struct event_base* _base, struct ev
   ghits = 0;
   esets = 0;
   isets = 0;
-  gloc = rand() % (100*2-1)+1;
-  sloc = rand() % (100*2-1)+1;
-  iloc = rand() % (2*2-1)+1;
+  gloc = rand() % (10*2-1)+1;
+  sloc = rand() % (10*2-1)+1;
+  iloc = rand() % (10*2-1)+1;
 
   op_queue_size = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
   opaque = (uint32_t*)malloc(sizeof(uint32_t)*(LEVELS+1));
@@ -323,23 +371,12 @@ uint32_t ConnectionMultiApprox::get_cid() {
 }
 
 int ConnectionMultiApprox::add_to_wb_keys(string key) {
-    int ret = -1;
-    pthread_mutex_lock(lock);
-    auto pos = g_wb_keys->find(key);
-    if (pos == g_wb_keys->end()) {
-        g_wb_keys->insert( {key, vector<Operation*>() });
-        ret = 1;
-        //fprintf(stderr,"----set: %s----\n",Op.key.c_str());
-        //for (auto iter = g_wb_keys->begin(); iter != g_wb_keys->end(); ++iter){
-        //    fprintf(stderr,"%s,%d\n",iter->first.c_str(),iter->second);
-        //}
-        //fprintf(stderr,"----%d----\n",cid);
-    } else {
-        ret = 2;
+    auto pos = wb_keys.find(key);
+    if (pos == wb_keys.end()) {
+        wb_keys.insert( {key, vector<Operation*>() });
+        return 1;
     }
-
-    pthread_mutex_unlock(lock);
-    return ret;
+    return 2;
 }
 
 int ConnectionMultiApprox::add_to_copy_keys(string key) {
@@ -356,20 +393,21 @@ void ConnectionMultiApprox::del_copy_keys(string key) {
 
     auto position = copy_keys.find(key);
     if (position != copy_keys.end()) {
-        vector<Operation*> op_list = position->second;
+        vector<Operation*> op_list = vector<Operation*>(position->second);
+        copy_keys.erase(position);
         for (auto it = op_list.begin(); it != op_list.end(); ++it) {
             issue_op(*it);
         }
-        copy_keys.erase(position);
     } else {
         fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
     }
 }
 
 int ConnectionMultiApprox::add_to_touch_keys(string key) {
+    //return touch_keys.assign_if_equal( key, NULL, cid ) != NULL ? 1 : 2;
     auto pos = touch_keys.find(key);
     if (pos == touch_keys.end()) {
-        touch_keys.insert( {key, vector<Operation*>() });
+        touch_keys.insert( {key, cid });
         return 1;
     }
     return 2;
@@ -377,13 +415,9 @@ int ConnectionMultiApprox::add_to_touch_keys(string key) {
 
 
 void ConnectionMultiApprox::del_touch_keys(string key) {
-
+    //touch_keys.erase(key);
     auto position = touch_keys.find(key);
     if (position != touch_keys.end()) {
-        vector<Operation*> op_list = position->second;
-        for (auto it = op_list.begin(); it != op_list.end(); ++it) {
-            issue_op(*it);
-        }
         touch_keys.erase(position);
     } else {
         fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
@@ -421,15 +455,15 @@ int ConnectionMultiApprox::issue_op(Operation *Op) {
               issue_noop(now,1);
           }
           if (incl == 1) {
-            //if (isets >= iloc) {
-            if (1) {
+            if (isets >= iloc) {
+            //if (1) {
                 const char *data = &random_char[index];
                 issued = issue_set(Op, data, now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
-                int ret = add_to_touch_keys(string(Op->key));
-                if (ret == 1) {
+                //int ret = add_to_touch_keys(string(Op->key));
+                //if (ret == 1) {
                     issue_touch(Op->key,Op->valuelen,now, ITEM_L2 | SRC_DIRECT_SET);
-                }
-                iloc += rand()%(2*2-1)+1;
+                //}
+                iloc += rand()%(10*2-1)+1;
             } else {
                 issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET | ITEM_DIRTY);
             }
@@ -438,7 +472,7 @@ int ConnectionMultiApprox::issue_op(Operation *Op) {
             issued = issue_set(Op, &random_char[index], now, flags | LOG_OP | ITEM_L1 | SRC_DIRECT_SET);
             if (esets >= sloc) {
                 issue_delete(Op->key,now,ITEM_L2 | SRC_DIRECT_SET);
-                sloc += rand()%(100*2-1)+1;
+                sloc += rand()%(10*2-1)+1;
             }
             esets++;
           }
@@ -459,18 +493,16 @@ int ConnectionMultiApprox::issue_op(Operation *Op) {
 
 void ConnectionMultiApprox::del_wb_keys(string key) {
 
-    pthread_mutex_lock(lock);
-    auto position = g_wb_keys->find(key);
-    if (position != g_wb_keys->end()) {
-        vector<Operation*> op_list = position->second;
+    auto position = wb_keys.find(key);
+    if (position != wb_keys.end()) {
+        vector<Operation*> op_list = vector<Operation*>(position->second);
+        wb_keys.erase(position);
         for (auto it = op_list.begin(); it != op_list.end(); ++it) {
             issue_op(*it);
         }
-        g_wb_keys->erase(position);
     } else {
         fprintf(stderr,"expected %s, got nuthin\n",key.c_str());
     }
-    pthread_mutex_unlock(lock);
 }
 
 
@@ -576,14 +608,54 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
     
     int ret = 0;
     int nissued = 0;
-    while (nissued < 2) {
+    
+    //while (nissued < 1) {
     
     //pthread_mutex_lock(lock);
-        if (!trace_queue->empty()) {
-            Operation *Op = (trace_queue->front());
+        //if (!trace_queue->empty()) {
+            
+            /* check if in global wb queue */
+            //double percent = (double)total/((double)trace_queue_n) * 100;
+            //if (percent > o_percent+2) {
+            //    //update the percentage table and see if we should execute
+            //    if (options.ratelimit) {
+            //        double min_percent = 1000;
+            //        auto it = cid_rate.begin();
+            //        while (it != cid_rate.end()) {
+            //           if (it->second < min_percent) {
+            //               min_percent = it->second;
+            //           }
+            //           ++it;
+            //        }
+
+            //        if (percent > min_percent+2) {
+            //            struct timeval tv;
+            //            tv.tv_sec = 0;
+            //            tv.tv_usec = 100;
+            //            int good = 0;
+            //            if (!event_pending(timer, EV_TIMEOUT, NULL)) {
+            //                good = evtimer_add(timer, &tv);
+            //            }
+            //            if (good != 0) {
+            //                fprintf(stderr,"eventimer is messed up!\n");
+            //                return 2;
+            //            }
+            //            return 1;
+            //        }
+            //    }
+            //    cid_rate.insert( {cid, percent});
+            //    fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
+            //    o_percent = percent;
+            //}
+            //
+            
+            Operation *Op = trace_queue->front(); 
+            trace_queue->pop();
+            //Operation *Op = g_trace_queue.dequeue(); 
+            
             if (Op->type == Operation::SASL) {
                 eof = 1;
-                cid_rate[cid] = 100;
+                cid_rate.insert( {cid, 100 } );
                 fprintf(stderr,"cid %d done\n",cid);
                 string op_queue1;
                 string op_queue2;
@@ -603,43 +675,16 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
             } 
             
 
-            /* check if in global wb queue */
-            double percent = (double)total/((double)trace_queue_n) * 100;
-            if (percent > o_percent+2) {
-                //update the percentage table and see if we should execute
-                pthread_mutex_lock(lock);
-                std::vector<double>::iterator mp = std::min_element(cid_rate.begin(), cid_rate.end());
-                double min_percent = *mp;
-
-                if (options.ratelimit && percent > min_percent+2) {
-                    struct timeval tv;
-                    tv.tv_sec = 0;
-                    tv.tv_usec = 100;
-                    int good = 0;
-                    if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                        good = evtimer_add(timer, &tv);
-                    }
-                    if (good != 0) {
-                        pthread_mutex_unlock(lock);
-                        fprintf(stderr,"eventimer is messed up!\n");
-                        return 2;
-                    }
-                    pthread_mutex_unlock(lock);
-                    return 1;
-                }
-                cid_rate[cid] = percent;
-                pthread_mutex_unlock(lock);
-                //fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
-                o_percent = percent;
-            }
             
-            trace_queue->pop();
+            //trace_queue->pop();
 
             //pthread_mutex_lock(lock);
-            //auto check = g_wb_keys->find(string(Op->key));
-            //if (check != g_wb_keys->end()) {
+            //auto check = wb_keys.find(string(Op->key));
+            //if (check != wb_keys.end()) {
             //    check->second.push_back(Op);
-            //    pthread_mutex_unlock(lock);
+            //    return 0;
+            //}
+                //pthread_mutex_unlock(lock);
                 //pthread_mutex_unlock(lock);
                 //struct timeval tv;
                 //double delay; 
@@ -665,14 +710,14 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
             }
             //}
 
-        } else {
-            return 1;
-        }
-    }
-    if (last_quiet1) {
-        issue_noop(now,1);
-        last_quiet1 = false;
-    }
+        //} else {
+        //    return 1;
+        //}
+    //}
+    //if (last_quiet1) {
+    //    issue_noop(now,1);
+    //    last_quiet1 = false;
+    //}
 
     return ret;
 
@@ -682,6 +727,13 @@ int ConnectionMultiApprox::issue_getsetorset(double now) {
  * Issue a get request to the server.
  */
 int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool quiet, uint32_t flags, Operation *l1) {
+  
+  //check if op is in copy_keys (currently going to L1)
+  //auto check = copy_keys.find(string(pop->key));
+  //if (check != copy_keys.end()) {
+  //    check->second.push_back(pop);
+  //    return 1;
+  //} 
 
   struct evbuffer *output = NULL;
   int level = 0;
@@ -717,12 +769,12 @@ int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool q
   if (l1 != NULL) {
       pop->l1 = l1;
   }
+
   op_queue[level][pop->opaque] = pop;
   //op_queue[level].push(op);
   op_queue_size[level]++;
-
 #ifdef DEBUGS
-  fprintf(stderr,"cid: %d issing get: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,key,valuelen,level,flags,pop->opaque);
+  fprintf(stderr,"cid: %d issing get: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,pop->key,pop->valuelen,level,flags,pop->opaque);
 #endif
   
   if (opaque[level] > OPAQUE_MAX) {
@@ -732,12 +784,6 @@ int ConnectionMultiApprox::issue_get_with_len(Operation *pop, double now, bool q
   //if (read_state == IDLE) read_state = WAITING_FOR_GET;
   uint16_t keylen = strlen(pop->key);
 
-  //check if op is in copy_keys (currently going to L1)
-  auto pos = copy_keys.find(string(pop->key));
-  if (pos != copy_keys.end()) {
-      pos->second.push_back(pop);
-      return 1;
-  } 
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_GET, htons(keylen),
@@ -1002,6 +1048,13 @@ void ConnectionMultiApprox::issue_noop(double now, int level) {
  */
 int ConnectionMultiApprox::issue_set(Operation *pop, const char* value, double now, uint32_t flags) {
   
+  //check if op is in copy_keys (currently going to L1)
+  //auto check = copy_keys.find(string(pop->key));
+  //if (check != copy_keys.end()) {
+  //    check->second.push_back(pop);
+  //    return 1;
+  //} 
+  
   struct evbuffer *output = NULL;
   int level = 0;
   int length = pop->valuelen;
@@ -1029,7 +1082,7 @@ int ConnectionMultiApprox::issue_set(Operation *pop, const char* value, double n
   //op_queue[level].push(op);
   op_queue_size[level]++;
 #ifdef DEBUGS
-  fprintf(stderr,"cid: %d issing set: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,key,length,level,flags,pop->opaque);
+  fprintf(stderr,"cid: %d issing set: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,pop->key,length,level,flags,pop->opaque);
 #endif
   
   if (opaque[level] > OPAQUE_MAX) {
@@ -1038,12 +1091,6 @@ int ConnectionMultiApprox::issue_set(Operation *pop, const char* value, double n
 
   uint16_t keylen = strlen(pop->key);
   
-  //check if op is in copy_keys (currently going to L1)
-  auto pos = copy_keys.find(string(pop->key));
-  if (pos != copy_keys.end()) {
-      pos->second.push_back(pop);
-      return 1;
-  } 
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_SET, htons(keylen),
@@ -1601,12 +1648,12 @@ void ConnectionMultiApprox::read_callback1() {
                     //finish_op(op,0);
 
                 } else {
-                    if (OP_incl(op)) { // && ghits >= gloc) {
-                        int ret = add_to_touch_keys(string(op->key));
-                        if (ret == 1) {
+                    if (OP_incl(op) && ghits >= gloc) {
+                        //int ret = add_to_touch_keys(string(op->key));
+                        //if (ret == 1) {
                             issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
-                        }
-                        gloc += rand()%(100*2-1)+1;
+                        //}
+                        gloc += rand()%(10*2-1)+1;
                     }
                     ghits++;
                     finish_op(op,1);
@@ -1618,10 +1665,10 @@ void ConnectionMultiApprox::read_callback1() {
             }
             break;
         case Operation::SET:
-            if (OP_src(op) == SRC_L1_COPY ||
-                OP_src(op) == SRC_L2_M) {
-                del_copy_keys(string(op->key));
-            }
+            //if (OP_src(op) == SRC_L1_COPY ||
+            //    OP_src(op) == SRC_L2_M) {
+            //    del_copy_keys(string(op->key));
+            //}
             if (evict->evicted) {
                 string wb_key(evict->evictedKey);
                 if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
@@ -1755,14 +1802,14 @@ void ConnectionMultiApprox::read_callback2() {
                     int valuelen = op->valuelen;
                     int index = lrand48() % (1024 * 1024);
                     int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
-                    int ret = add_to_copy_keys(string(op->key));
-                    if (ret == 1) {
+                    //int ret = add_to_copy_keys(string(op->key));
+                    //if (ret == 1) {
                         issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
                         if (OP_incl(op)) {
                             issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
                             last_quiet2 = false; 
                         }
-                    }
+                    //}
                     last_quiet1 = false; 
                     finish_op(op,0); // sets read_state = IDLE
                     
@@ -1773,10 +1820,10 @@ void ConnectionMultiApprox::read_callback2() {
                         int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
                         string key = string(op->key);
                         const char *data = &random_char[index];
-                        int ret = add_to_copy_keys(string(op->key));
-                        if (ret == 1) {
+                        //int ret = add_to_copy_keys(string(op->key));
+                        //if (ret == 1) {
                             issue_set(op->key,data,valuelen, now, flags);
-                        }
+                        //}
                         this->stats.copies_to_l1++;
                         //djb: this is automatically done in the L2 server
                         //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?
@@ -1812,7 +1859,7 @@ void ConnectionMultiApprox::read_callback2() {
                         issue_touch(op->key,valuelen,now, ITEM_L1 | SRC_L2_H | ITEM_DIRTY);
                     }
                 }
-                del_touch_keys(string(op->key));
+                //del_touch_keys(string(op->key));
             }
             finish_op(op,0);
             break;

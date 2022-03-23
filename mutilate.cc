@@ -49,12 +49,15 @@ namespace fs = std::filesystem;
 #include "mutilate.h"
 #include "util.h"
 #include "blockingconcurrentqueue.h"
+//#include <folly/concurrency/UnboundedQueue.h>
+//#include <folly/concurrency/ConcurrentHashMap.h>
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define hashsize(n) ((unsigned long int)1<<(n))
 
 using namespace std;
 using namespace moodycamel;
+//using namespace folly;
 
 int max_n[3] = {0,0,0};
 ifstream kvfile;
@@ -65,9 +68,20 @@ pthread_cond_t reader_ready;
 int reader_not_ready = 1;
 
 pthread_mutex_t *item_locks;
-int item_lock_hashpower = 13;
+int item_lock_hashpower = 14;
         
 map<string,int> g_key_hist;
+
+//USPMCQueue<Operation*,true,8,7> g_trace_queue;
+
+//ConcurrentHashMap<int, double> cid_rate;
+unordered_map<int,double> cid_rate;
+//ConcurrentHashMap<string, vector<Operation*>> copy_keys;
+unordered_map<string, vector<Operation*>> copy_keys;
+unordered_map<string, vector<Operation*>> wb_keys;
+//ConcurrentHashMap<string, vector<Operation*>> touch_keys;
+unordered_map<string, int> touch_keys;
+//ConcurrentHashMap<string, vector<Operation*>> wb_keys;
 
 gengetopt_args_info args;
 char random_char[4 * 1024 * 1024];  // Buffer used to generate random values.
@@ -1124,12 +1138,14 @@ void* reader_thread(void *arg) {
                                         Op->type = Operation::SET;
                                         break;
                                 }
-                                if (first) {
-                                    appid = (rand() % (trace_queue->size()-1)) + 1;
-                                    if (appid == 0) appid = 1;
-                                    first = 0;
-                                }
-                                batch++;
+                                //if (first) {
+                                //    appid = (rand() % (trace_queue->size()-1)) + 1;
+                                //    if (appid == 0) appid = 1;
+                                //    first = 0;
+                                //}
+                                //batch++;
+                                appid = (rand() % (trace_queue->size()-1)) + 1;
+                                if (appid == 0) appid = 1;
                             } else {
                                 continue;
                             }
@@ -1183,11 +1199,12 @@ void* reader_thread(void *arg) {
                             }
                             Op->appid = appid;
                             trace_queue->at(appid)->push(Op);
-                            if (twitter_trace == 3 && batch == 2) {
-                                appid = (rand() % (trace_queue->size()-1)) + 1;
-                                if (appid == 0) appid = 1;
-                                batch = 0;
-                            }
+                            //g_trace_queue.enqueue(Op);
+                            //if (twitter_trace == 3) { // && batch == 2) {
+                            //    appid = (rand() % (trace_queue->size()-1)) + 1;
+                            //    if (appid == 0) appid = 1;
+                            //    batch = 0;
+                            //}
                         }
                     } else {
                         fprintf(stderr,"big error!\n");
@@ -1214,7 +1231,8 @@ void* reader_thread(void *arg) {
                 Operation *eof = new Operation;
                 eof->type = Operation::SASL;
                 eof->appid = j;
-  	        trace_queue->at(j)->push(eof);
+  	            trace_queue->at(j)->push(eof);
+                //g_trace_queue.enqueue(eof);
                 if (i == 0) {
                     fprintf(stderr,"appid %d, tq size: %ld\n",j,trace_queue->at(j)->size());
                 }

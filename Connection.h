@@ -389,7 +389,6 @@ private:
   double last_rx;      // Used to moderate transmission rate.
   double last_tx;
 
-  vector<string> wb_keys;
   enum read_state_enum {
     INIT_READ,
     CONN_SETUP,
@@ -443,8 +442,6 @@ private:
   Generator *iagen;
   pthread_mutex_t* lock;
   unordered_map<string,vector<Operation*>> *g_wb_keys;
-  unordered_map<string,vector<Operation*>> copy_keys;
-  unordered_map<string,vector<Operation*>> touch_keys;
   queue<Operation*> *trace_queue;
 
   // state machine functions / event processing

@@ -27,6 +27,8 @@
 #include <string.h>
 #include "blockingconcurrentqueue.h"
 
+//#include <folly/concurrency/ConcurrentHashMap.h>
+
 #define ITEM_L1 1
 #define ITEM_L2 2
 #define LOG_OP 4
@@ -86,7 +88,7 @@
 
 //#define DEBUGMC
 //#define DEBUGS
-
+//using namespace folly;
 using namespace moodycamel;
 
 pthread_mutex_t cid_lock_m = PTHREAD_MUTEX_INITIALIZER;
