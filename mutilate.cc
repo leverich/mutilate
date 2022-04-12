@@ -1629,7 +1629,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && !args.approx_given) {
+  } else if (servers.size() == 2 && ! ( args.approx_given || args.approx_batch_given)) {
     vector<ConnectionMulti*> connections;
     vector<ConnectionMulti*> server_lead;
 
@@ -1786,7 +1786,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && args.approx_given) {
+  } else if (servers.size() == 2 && args.approx_given && !args.approx_batch_given) {
     vector<ConnectionMultiApprox*> connections;
     vector<ConnectionMultiApprox*> server_lead;
 
@@ -1933,6 +1933,164 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     // Tear-down and accumulate stats.
     for (ConnectionMultiApprox *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  
+  } else if (servers.size() == 2 && args.approx_batch_given) {
+    vector<ConnectionMultiApproxBatch*> connections;
+    vector<ConnectionMultiApproxBatch*> server_lead;
+
+    string hostname1 = servers[0];
+    string hostname2 = servers[1];
+    string port = "11211";
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+      int fd1 = -1;
+
+      if ( (fd1 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        exit(-1);
+      }
+
+      struct sockaddr_un sin1;
+      memset(&sin1, 0, sizeof(sin1));
+      sin1.sun_family = AF_LOCAL;
+      strcpy(sin1.sun_path, hostname1.c_str());
+
+      fcntl(fd1, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      int addrlen;
+      addrlen = sizeof(sin1);
+
+      int max_tries = 50;
+      int n_tries = 0;
+      int s = 10;
+      while (connect(fd1, (struct sockaddr*)&sin1, addrlen) == -1) {
+        perror("l1 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l1 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+      
+      int fd2 = -1;
+      if ( (fd2 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("l2 socket error");
+        exit(-1);
+      }
+      struct sockaddr_un sin2;
+      memset(&sin2, 0, sizeof(sin2));
+      sin2.sun_family = AF_LOCAL;
+      strcpy(sin2.sun_path, hostname2.c_str());
+      fcntl(fd2, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      addrlen = sizeof(sin2);
+      n_tries = 0;
+      s = 10;
+      while (connect(fd2, (struct sockaddr*)&sin2, addrlen) == -1) {
+        perror("l2 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l2 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+
+
+      ConnectionMultiApproxBatch* conn = new ConnectionMultiApproxBatch(base, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true, fd1, fd2);
+     
+      int connected = 0;
+      if (conn) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+
+    fprintf(stderr,"thread %ld gtg\n",pthread_self());
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
+
+      bool restart = false;
+      for (ConnectionMultiApproxBatch *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+   
+    
+
+    double start = get_time();
+    double now = start;
+    for (ConnectionMultiApproxBatch *conn: connections) {
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+    } 
+    //fprintf(stderr,"Start = %f\n", start);
+
+    // Main event loop.
+    while (1) {
+      event_base_loop(base, loop_flag);
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+
+      bool restart = false;
+      for (ConnectionMultiApproxBatch *conn: connections) {
+        if (!conn->check_exit_condition(now)) {
+          restart = true;
+        }
+      }
+      if (restart) continue;
+      else break;
+
+    }
+
+
+    //  V("Start = %f", start);
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxBatch *conn: connections) {
       stats.accumulate(conn->stats);
       delete conn;
     }

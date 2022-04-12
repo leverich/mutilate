@@ -100,16 +100,6 @@ static int classes = 0;
 static int sizes[NCLASSES+1];
 static int inclusives[NCLASSES+1];
 
-typedef struct _evicted_type {
-    bool evicted;
-    uint32_t evictedFlags;
-    uint32_t serverFlags;
-    uint32_t clsid;
-    uint32_t evictedKeyLen;
-    uint32_t evictedLen;
-    char *evictedKey;
-    char *evictedData;
-} evicted_t;
 
 static vector<double> cid_rate;
 
