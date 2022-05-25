@@ -10,7 +10,9 @@ option "quiet" - "Disable log messages."
 
 text "\nBasic options:"
 
+option "use_shm" - "use shared memory"
 option "ratelimit" - "limit conns from exceeding each other in requests"
+option "v1callback" - "use v1 readcallbacks"
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
 option "unix_socket" - "Use UNIX socket instead of TCP."

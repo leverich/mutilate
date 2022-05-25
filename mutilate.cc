@@ -1629,7 +1629,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && ! ( args.approx_given || args.approx_batch_given)) {
+  } else if (servers.size() == 2 && ! ( args.approx_given || args.approx_batch_given || args.use_shm_given)) {
     vector<ConnectionMulti*> connections;
     vector<ConnectionMulti*> server_lead;
 
@@ -2079,7 +2079,12 @@ void do_mutilate(const vector<string>& servers, options_t& options,
         }
       }
       if (restart) continue;
-      else break;
+      else {
+          for (ConnectionMultiApproxBatch *conn: connections) {
+              fprintf(stderr,"tid %ld, cid: %d\n",pthread_self(),conn->get_cid());
+          }
+          break;
+      }
 
     }
 
@@ -2101,6 +2106,61 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
+  } else if (servers.size() == 2 && args.use_shm_given) {
+    vector<ConnectionMultiApproxShm*> connections;
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+
+      ConnectionMultiApproxShm* conn = new ConnectionMultiApproxShm(options,args.agentmode_given ? false : true);
+      int connected = 0;
+      if (conn && conn->do_connect()) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+    //fprintf(stderr,"Start = %f\n", start);
+    double start = get_time();
+    double now = start;
+    for (ConnectionMultiApproxShm *conn: connections) {
+        conn->start_time = now;
+        conn->drive_write_machine_shm(now);
+    }
+
+
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxShm *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
   }
 }
 
@@ -2117,6 +2177,7 @@ void args_to_options(options_t* options) {
   options->threshold = args.threshold_arg;
   options->wb_all = args.wb_all_arg;
   options->ratelimit = args.ratelimit_given;
+  options->v1callback = args.v1callback_given;
   if (args.inclusives_given) {
     memset(options->inclusives,0,256);
     strncpy(options->inclusives,args.inclusives_arg,256);

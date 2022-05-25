@@ -44,8 +44,8 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O0 -Wall -g --std=c++17 -lstdc++fs')
-env.Append(CPPFLAGS = ' -O0 -Wall -g --std=c++17 -lstdc++fs')
+env.Append(CFLAGS = '-O3 -Wall -g --std=c++17 -lstdc++fs')
+env.Append(CPPFLAGS = '-O3 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CFLAGS = ' -O3 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CPPFLAGS = ' -O3 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CFLAGS = ' -O3 -Wall -g')
@@ -62,7 +62,7 @@ env.Append(CPPFLAGS = ' -O0 -Wall -g --std=c++17 -lstdc++fs')
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 
 src = Split("""mutilate.cc cmdline.cc log.cc distributions.cc util.cc
-               Connection.cc ConnectionMulti.cc ConnectionMultiApprox.cc Protocol.cc Generator.cc""")
+               Connection.cc ConnectionMulti.cc ConnectionMultiApprox.cc ConnectionMultiApproxBatch.cc ConnectionMultiApproxShm.cc Protocol.cc Generator.cc bipbuffer.cc""")
 
 if not env['HAVE_POSIX_BARRIER']: # USE_POSIX_BARRIER:
     src += ['barrier.cc']

@@ -240,7 +240,7 @@ ConnectionMultiApproxBatch::ConnectionMultiApproxBatch(struct event_base* _base,
     init_classes();
     init_inclusives(options.inclusives);
   }
-  cid_rate.insert( { cid, 0 } );
+  //cid_rate.insert( { cid, 0 } );
   
   pthread_mutex_unlock(&cid_lock_m_approx_batch);
   
@@ -294,12 +294,12 @@ ConnectionMultiApproxBatch::ConnectionMultiApproxBatch(struct event_base* _base,
   bev1 = bufferevent_socket_new(base, fd1, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev1, bev_read_cb1_approx_batch, bev_write_cb_m_approx_batch, bev_event_cb1_approx_batch, this);
   bufferevent_enable(bev1, EV_READ | EV_WRITE);
-  //bufferevent_setwatermark(bev1, EV_READ, 4*1024, 0);
+  //bufferevent_setwatermark(bev1, EV_READ, 512*1024, 0);
   
   bev2 = bufferevent_socket_new(base, fd2, BEV_OPT_CLOSE_ON_FREE);
   bufferevent_setcb(bev2, bev_read_cb2_approx_batch, bev_write_cb_m_approx_batch, bev_event_cb2_approx_batch, this);
   bufferevent_enable(bev2, EV_READ | EV_WRITE);
-  //bufferevent_setwatermark(bev2, EV_READ, 4*1024, 0);
+  //bufferevent_setwatermark(bev2, EV_READ, 512*1024, 0);
   
   timer = evtimer_new(base, timer_cb_m_approx_batch, this);
 
@@ -314,18 +314,22 @@ void ConnectionMultiApproxBatch::set_queue(queue<Operation*>* a_trace_queue) {
     incl_ = get_incl(Op->valuelen,strlen(Op->key));
     clsid_ = get_class(Op->valuelen,strlen(Op->key));
 
-    buffer_size_ = (1024*512)*options.depth;
+    buffer_size_ = 1024*1024*10;
     //setup the buffers
     //max is (valuelen + 256 + 24 + 4 + 4 )  * depth
     for (int i = 1; i <= LEVELS; i++) {
-        buffer_write[i] = (unsigned char*)malloc(buffer_size_);
+        buffer_write[i] = (unsigned char*)malloc(options.depth*512*1024);
         buffer_read[i] = (unsigned char*)malloc(buffer_size_);
+        buffer_leftover[i] = (unsigned char*)malloc(buffer_size_);
+        memset(buffer_read[i],0,buffer_size_);
+        memset(buffer_leftover[i],0,buffer_size_);
         buffer_write_n[i] = 0;
         buffer_read_n[i] = 0;
         buffer_write_nbytes[i] = 0;
         buffer_read_nbytes[i] = 0;
         buffer_write_pos[i] = buffer_write[i];
         buffer_read_pos[i] = buffer_read[i];
+        buffer_lasthdr[i] = 0; // buffer_read[i];
     }
 
 }
@@ -425,7 +429,7 @@ int ConnectionMultiApproxBatch::issue_op(Operation *Op) {
           issued = issue_get_with_len(Op, now, false, flags | LOG_OP | ITEM_L1);
           this->stats.gets++;
           gets++;
-          this->stats.gets_cid[cid]++;
+          //this->stats.gets_cid[cid]++;
           break;
     case Operation::SET:
           if (incl == 1) {
@@ -447,7 +451,7 @@ int ConnectionMultiApproxBatch::issue_op(Operation *Op) {
             esets++;
           }
           this->stats.sets++;
-          this->stats.sets_cid[cid]++;
+          //this->stats.sets_cid[cid]++;
           break;
     case Operation::DELETE:
     case Operation::TOUCH:
@@ -511,17 +515,20 @@ ConnectionMultiApproxBatch::~ConnectionMultiApproxBatch() {
 
   for (int i = 0; i <= LEVELS; i++) {
       free(op_queue[i]);
-      free(buffer_write[i]);
-      free(buffer_read[i]);
+      if (i > 0) {
+        free(buffer_write[i]);
+        free(buffer_read[i]);
+      }
 
   }
   
   free(op_queue_size);
   free(opaque);
   free(op_queue);
-  //event_free(timer);
+  event_free(timer);
   //timer = NULL;
   // FIXME:  W("Drain op_q?");
+
   bufferevent_free(bev1);
   bufferevent_free(bev2);
 
@@ -563,63 +570,61 @@ int ConnectionMultiApproxBatch::issue_getsetorset(double now) {
     
     Operation *Op = trace_queue->front(); 
     if (Op->type == Operation::SASL) {
-        eof = 1;
-        cid_rate.insert( {cid, 100 } );
-        fprintf(stderr,"cid %d done\n",cid);
-        string op_queue1;
-        string op_queue2;
-        for (int j = 0; j < 2; j++) {
-            for (int i = 0; i < OPAQUE_MAX; i++) {
-                if (op_queue[j+1][i] != NULL) {
-                    if (j == 0) {
-                        op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
-                    } else {
-                        op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
-                    }
-                }
+        //cid_rate.insert( {cid, 100 } );
+        //fprintf(stderr,"cid %d done before loop\n",cid);
+        //string op_queue1;
+        //string op_queue2;
+        //for (int j = 0; j < 2; j++) {
+        //    for (int i = 0; i < OPAQUE_MAX; i++) {
+        //        if (op_queue[j+1][i] != NULL) {
+        //            if (j == 0) {
+        //                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
+        //            } else {
+        //                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
+        //            }
+        //        }
+        //    }
+        //}
+        for (int i = 1; i <= LEVELS; i++) {
+            if (buffer_write_n[i] > 0) {
+                send_write_buffer(i);
             }
         }
-        send_write_buffer(1);
-        send_write_buffer(2);
-        fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
+        eof = 1;
+        //fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
         return 1;
     } 
    
-    while (buffer_write_n[1] < (uint32_t)options.depth) {
-        int issued = issue_op(Op);
-        if (issued) {
-            trace_queue->pop();
-            Op = trace_queue->front();
+    int issued = issue_op(Op);
+    trace_queue->pop();
+    while (issued != 2) {
+        Op = trace_queue->front();
 
-            if (Op->type == Operation::SASL) {
-                eof = 1;
-                cid_rate.insert( {cid, 100 } );
-                fprintf(stderr,"cid %d done\n",cid);
-                string op_queue1;
-                string op_queue2;
-                for (int j = 0; j < 2; j++) {
-                    for (int i = 0; i < OPAQUE_MAX; i++) {
-                        if (op_queue[j+1][i] != NULL) {
-                            if (j == 0) {
-                                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
-                            } else {
-                                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
-                            }
-                        }
-                    }
+        if (Op->type == Operation::SASL) {
+            for (int i = 1; i <= LEVELS; i++) {
+                if (buffer_write_n[i] > 0) {
+                    send_write_buffer(i);
                 }
-                fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
-                send_write_buffer(1);
-                send_write_buffer(2);
-                return 0;
             }
-            total++;
-            if (issued == 2) {
-                return 0;
-            }
-        } else {
-            fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
+            //string op_queue1;
+            //string op_queue2;
+            //for (int j = 0; j < 2; j++) {
+            //    for (int i = 0; i < OPAQUE_MAX; i++) {
+            //        if (op_queue[j+1][i] != NULL) {
+            //            if (j == 0) {
+            //                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
+            //            } else {
+            //                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
+            //            }
+            //        }
+            //    }
+            //}
+            //fprintf(stderr,"done in loop cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
+            eof = 1;
+            return 1;
         }
+        issued = issue_op(Op);
+        trace_queue->pop();
     }
     
     return 0;
@@ -1061,9 +1066,18 @@ void ConnectionMultiApproxBatch::finish_op(Operation *op, int was_hit) {
   uint8_t level = OP_level(op);
   if (op->l1 != NULL) {
       //delete op_queue[1][op->l1->opaque];
-      op_queue[1][op->l1->opaque] = 0;
-      op_queue_size[1]--;
-      delete op->l1;
+      if (op->l1 == op_queue[1][op->l1->opaque]) {
+        op_queue[1][op->l1->opaque] = 0;
+        if (op_queue_size[1] > 0) {
+            op_queue_size[1]--;
+        } else {
+            fprintf(stderr,"chained op_Queue_size[%d] out of sync!!\n",1);
+        }
+        delete op->l1;
+      } else {
+        fprintf(stderr,"op_queue out of sync! Expected %p, got %p, opa1: %d opaq2: %d\n",
+              op,op_queue[1][op->opaque],op->opaque,op_queue[1][op->opaque]->opaque);
+      }
   }
   //op_queue[level].erase(op_queue[level].begin()+opopq);
   if (op == op_queue[level][op->opaque] && 
@@ -1071,11 +1085,15 @@ void ConnectionMultiApproxBatch::finish_op(Operation *op, int was_hit) {
     //delete op_queue[level][op->opaque];
     op_queue[level][op->opaque] = 0;
     delete op;
+    if (op_queue_size[level] > 0) {
+        op_queue_size[level]--;
+    } else {
+        fprintf(stderr,"op_Queue_size[%d] out of sync!!\n",level);
+    }
   } else {
       fprintf(stderr,"op_queue out of sync! Expected %p, got %p, opa1: %d opaq2: %d\n",
               op,op_queue[level][op->opaque],op->opaque,op_queue[level][op->opaque]->opaque);
   }
-  op_queue_size[level]--;
   read_state = IDLE;
 
 }
@@ -1086,11 +1104,20 @@ void ConnectionMultiApproxBatch::finish_op(Operation *op, int was_hit) {
  * Check if our testing is done and we should exit.
  */
 bool ConnectionMultiApproxBatch::check_exit_condition(double now) {
-  if (eof && op_queue_size[1] == 0 && op_queue_size[2] == 0) {
-      return true;
-  }
-  if (read_state == INIT_READ) return false;
-
+  if (eof == 1) {
+      int done = 1;
+      for (int i = 1; i <= LEVELS; i++) {
+          if (buffer_write_n[i] != 0) {
+              //fprintf(stderr,"%d sending %d\n",i,buffer_write_n[i]);
+              send_write_buffer(i);
+              done = 0;
+          }
+      }
+      if (done) {
+        //fprintf(stderr,"%d done - check exit\n",cid);
+        return true;
+      }
+  } 
   return false;
 }
 
@@ -1178,9 +1205,6 @@ void ConnectionMultiApproxBatch::drive_write_machine(double now) {
   struct timeval tv;
 
   int max_depth = (int)options.depth*2;
-  if (check_exit_condition(now)) {
-      return;
-  }
 
   while (1) {
     switch (write_state) {
@@ -1201,7 +1225,8 @@ void ConnectionMultiApproxBatch::drive_write_machine(double now) {
 
       if (options.getsetorset) {
         int ret = issue_getsetorset(now);
-        if (ret == 1) return; //if at EOF
+        //if (ret) return; //if at EOF
+        return;
       }
       
       last_tx = now;
@@ -1217,10 +1242,17 @@ void ConnectionMultiApproxBatch::drive_write_machine(double now) {
     case WAITING_FOR_OPQ:
       if ( (op_queue_size[1] >= (size_t) max_depth) || 
           (op_queue_size[2] >= (size_t) max_depth) ) {
-          double delay = 0.01;
-          struct timeval tv;
-          double_to_tv(delay, &tv);
-          evtimer_add(timer, &tv);
+           for (int i = 1; i <= LEVELS; i++) {
+               if (max_depth > 16) {
+                   if (buffer_write_n[i] > max_depth*0.8) {
+                       send_write_buffer(i);
+                   }
+               }
+           }
+            next_time = now + 0.01;
+            double_to_tv(delay, &tv);
+            evtimer_add(timer, &tv);
+
           return;
       } else {
         write_state = ISSUING;
@@ -1236,23 +1268,37 @@ size_t ConnectionMultiApproxBatch::handle_response_batch(unsigned char *rbuf_pos
                                     size_t read_bytes, size_t consumed_bytes,
                                     int level, int extra) {
     if (rbuf_pos[0] != 129) {
-        fprintf(stderr,"we don't have a valid header %u\n",rbuf_pos[0]);
+        //fprintf(stderr,"cid %d we don't have a valid header %u\n",cid,rbuf_pos[0]);
         //buffer_read_pos[level] = rbuf_pos;
         //buffer_read_n[level] = 1;
         return 0;
     }
+    if ((read_bytes+extra - consumed_bytes) < 24) {
+        size_t have = (read_bytes+extra) - (consumed_bytes);
+        size_t need = 24 - (have);
+        buffer_read_n[level] = need;
+        buffer_read_nbytes[level] = have;
+        memcpy(buffer_leftover[level],rbuf_pos,have);
+        //buffer_lasthdr[level] = rbuf_pos;
+        //buffer_read_n[level] = need;
+        //buffer_read_nbytes[level] = have;
+        //fprintf(stderr,"cid %d - we don't have enough header data, need %lu more bytes, have %lu (targetLen: %d) (read_bytes %ld) (extra %d) %d)\n",cid,need,have,24,read_bytes,extra,level);
+        return 0;
+        
+    }
+
     binary_header_t* h = reinterpret_cast<binary_header_t*>(rbuf_pos);
     uint32_t bl = ntohl(h->body_len);
     uint16_t kl = ntohs(h->key_len);
     uint8_t el = h->extra_len;
     int targetLen = 24 + bl;
     if (consumed_bytes + targetLen > (read_bytes+extra)) {
-        size_t need = (consumed_bytes+targetLen) - (read_bytes+extra);
         size_t have = (read_bytes+extra) - (consumed_bytes);
-        //fprintf(stderr,"we don't have enough data, need %lu more bytes (targetLen: %d)\n",need,targetLen);
-        buffer_read_pos[level] = buffer_read[level]; //reset to begining of buffer
-        memcpy(buffer_read_pos[level],rbuf_pos,have);
-        buffer_read_n[level] = have;
+        size_t need = targetLen - (have);
+        buffer_read_n[level] = need;
+        buffer_read_nbytes[level] = have;
+        memcpy(buffer_leftover[level],rbuf_pos,have);
+        //fprintf(stderr,"cid %d - we don't have enough data, need %lu more bytes, have %lu (targetLen: %d) (read_bytes %ld) (extra %d) %d)\n",cid,need,have,targetLen,read_bytes,extra,level);
         return 0;
     }
     
@@ -1312,20 +1358,66 @@ size_t ConnectionMultiApproxBatch::handle_response_batch(unsigned char *rbuf_pos
     return targetLen;
 }
 
+
+size_t ConnectionMultiApproxBatch::fill_read_buffer(int level, int *extra) {
+
+  size_t read_bytes = 0;
+  struct bufferevent *bev = NULL;
+  switch (level) {
+      case 1:
+          bev = bev1;
+          break;
+      case 2:
+          bev = bev2;
+          break;
+      default:
+          bev = bev1;
+          break;
+  }
+  if (buffer_read_n[level] != 0) {
+      uint32_t have = buffer_read_nbytes[level];
+      struct evbuffer *input = bufferevent_get_input(bev);
+      size_t len = evbuffer_get_length(input);
+      if (len < buffer_read_n[level]) {
+          return 0;
+      }
+      memset(buffer_read[level],0,512*1024);
+      memcpy(buffer_read[level],buffer_leftover[level],have);
+      buffer_read_pos[level] = buffer_read[level];
+      read_bytes = bufferevent_read(bev,buffer_read_pos[level]+have,len);
+      if (read_bytes != len) { 
+          fprintf(stderr,"cid %d expected %lu got %lu\n",cid,len,read_bytes);
+      }
+      *extra = have;
+      buffer_read_n[level] = 0;
+      buffer_read_nbytes[level] = 0;
+
+  } else {
+      memset(buffer_read[level],0,512*1024);
+      buffer_read_pos[level] = buffer_read[level];
+      read_bytes = bufferevent_read(bev, buffer_read_pos[level], buffer_size_ / 4);
+      *extra = 0;
+  }
+  if (read_bytes == 0) {
+      fprintf(stderr,"cid %d read 0 bytes\n",cid);
+  }
+  return read_bytes;
+}
 /**
  * Handle incoming data (responses).
  */
 void ConnectionMultiApproxBatch::read_callback1() {
 
   int level = 1;
-     
-  int extra = buffer_read_n[level];
-  buffer_read_n[level] = 0;
-  
-  unsigned char* rbuf_pos = buffer_read[level];
+  int extra = 0;
+  size_t read_bytes = 0;
 
-  size_t read_bytes = bufferevent_read(bev1, rbuf_pos+extra, buffer_size_);
-  //fprintf(stderr,"l1 read: %lu\n",read_bytes);
+  read_bytes = fill_read_buffer(level,&extra);
+  if (read_bytes == 0) {
+    return;
+  }
+
+  //fprintf(stderr,"cid %d l1 read: %lu\n",cid,read_bytes);
   size_t consumed_bytes = 0;
   size_t batch = options.depth;
       //we have at least some data to read
@@ -1336,11 +1428,16 @@ void ConnectionMultiApproxBatch::read_callback1() {
       resp_t mc_resp;
       mc_resp.found = true;
       mc_resp.evict = evict;
-      size_t cbytes = handle_response_batch(rbuf_pos,&mc_resp,read_bytes,consumed_bytes,level,extra);
+      size_t cbytes = handle_response_batch(buffer_read_pos[level],&mc_resp,read_bytes,consumed_bytes,level,extra);
       if (cbytes == 0) {
+          if (evict) {
+              if (evict->evictedKey) free(evict->evictedKey);
+              if (evict->evictedData) free(evict->evictedData);
+              free(evict);
+          }
           break;
       }
-      rbuf_pos = rbuf_pos + cbytes;
+      buffer_read_pos[level] = buffer_read_pos[level] + cbytes;
       consumed_bytes += cbytes;
       uint32_t opaque = mc_resp.opaque;
       bool found = mc_resp.found;
@@ -1348,7 +1445,7 @@ void ConnectionMultiApproxBatch::read_callback1() {
       Operation *op = op_queue[level][opaque];
 #ifdef DEBUGMC
       char out[128];
-      sprintf(out,"conn l1: %u, reading opaque: %u\n",cid,opaque);
+      sprintf(out,"l1 cid %u, reading opaque: %u\n",cid,opaque);
       write(2,out,strlen(out));
       output_op(op,2,found);
 #endif
@@ -1429,27 +1526,31 @@ void ConnectionMultiApproxBatch::read_callback1() {
           free(evict);
       }
       nread_ops++;
-      if (rbuf_pos[0] != 129) {
+      if (buffer_read_pos[level][0] == 0) {
+          break;
+      }
+      if (buffer_read_pos[level][0] != 129) {
+          fprintf(stderr,"cid %d we don't have a valid header post %u\n",cid,buffer_read_pos[level][0]);
           break;
       }
   }
   //if (buffer_read_n[level] == 0) {
   //    memset(buffer_read[level],0,read_bytes);
   //}
-  if (nread_ops == 0) {
-      fprintf(stderr,"ugh only got: %lu ops expected %lu, read %lu, cid %u\n",nread_ops,batch,read_bytes,cid);
-  }
+  //if (nread_ops == 0) {
+  //    fprintf(stderr,"ugh only got: %lu ops expected %lu, read %lu, cid %u\n",nread_ops,batch,read_bytes,cid);
+  //    int *a = 0;
+  //    *a = 0;
+  //}
   
 
   double now = get_time();
-  if (check_exit_condition(now)) {
-      return;
-  }
-
   last_tx = now;
   stats.log_op(op_queue_size[1]);
   stats.log_op(op_queue_size[2]);
+
   drive_write_machine();
+    
   
 }
 
@@ -1457,14 +1558,17 @@ void ConnectionMultiApproxBatch::read_callback1() {
  * Handle incoming data (responses).
  */
 void ConnectionMultiApproxBatch::read_callback2() {
-  int level = 2;
   
-  int extra = buffer_read_n[level];
-  buffer_read_n[level] = 0;
-  unsigned char* rbuf_pos = buffer_read[level];
+  int level = 2;
+  int extra = 0;
+  
+  size_t read_bytes = 0;
 
+  read_bytes = fill_read_buffer(level,&extra);
+  if (read_bytes == 0) {
+    return;
+  }
 
-  size_t read_bytes = bufferevent_read(bev2, rbuf_pos+extra,buffer_size_);
   //fprintf(stderr,"l2 read: %lu\n",read_bytes);
   size_t consumed_bytes = 0;
   size_t batch = options.depth;
@@ -1474,11 +1578,11 @@ void ConnectionMultiApproxBatch::read_callback2() {
       resp_t mc_resp;
       mc_resp.found = true;
       mc_resp.evict = evict;
-      size_t cbytes = handle_response_batch(rbuf_pos,&mc_resp,read_bytes,consumed_bytes,level,extra);
+      size_t cbytes = handle_response_batch(buffer_read_pos[level],&mc_resp,read_bytes,consumed_bytes,level,extra);
       if (cbytes == 0) {
           break;
       }
-      rbuf_pos = rbuf_pos + cbytes;
+      buffer_read_pos[level] = buffer_read_pos[level] + cbytes;
       consumed_bytes += cbytes;
       uint32_t opaque = mc_resp.opaque;
       bool found = mc_resp.found;
@@ -1486,7 +1590,7 @@ void ConnectionMultiApproxBatch::read_callback2() {
       Operation *op = op_queue[level][opaque];
 #ifdef DEBUGMC
       char out[128];
-      sprintf(out,"conn l2: %u, reading opaque: %u\n",cid,opaque);
+      sprintf(out,"l2 cid %u, reading opaque: %u\n",cid,opaque);
       write(2,out,strlen(out));
       output_op(op,2,found);
 #endif
@@ -1567,28 +1671,28 @@ void ConnectionMultiApproxBatch::read_callback2() {
               DIE("not implemented");
       }
       nread_ops++;
-      if (rbuf_pos[0] != 129) {
+      if (buffer_read_pos[level][0] == 0) {
+          break;
+      }
+      if (buffer_read_pos[level][0] != 129) {
+          fprintf(stderr,"l2 cid %d we don't have a valid header post %u\n",cid,buffer_read_pos[level][0]);
           break;
       }
   }
   //if (buffer_read_n[level] == 0) {
   //    memset(buffer_read[level],0,read_bytes);
   //}
-  if (nread_ops == 0) {
-      fprintf(stderr,"ugh l2 only got: %lu ops expected %lu\n",nread_ops,batch);
-  }
+  //if (nread_ops == 0) {
+  //    fprintf(stderr,"ugh l2 only got: %lu ops expected %lu\n",nread_ops,batch);
+  //}
 
 
   double now = get_time();
-  if (check_exit_condition(now)) {
-      return;
-  }
-
   last_tx = now;
   stats.log_op(op_queue_size[2]);
   stats.log_op(op_queue_size[1]);
-  drive_write_machine();
   
+  drive_write_machine();
 }
 
 /**
@@ -1624,13 +1728,21 @@ void bev_event_cb2_approx_batch(struct bufferevent *bev, short events, void *ptr
 
 void bev_read_cb1_approx_batch(struct bufferevent *bev, void *ptr) {
   ConnectionMultiApproxBatch* conn = (ConnectionMultiApproxBatch*) ptr;
-  conn->read_callback1();
+  if (conn->options.v1callback) {
+    conn->read_callback1_v1();
+  } else {
+    conn->read_callback1();
+  }
 }
 
 
 void bev_read_cb2_approx_batch(struct bufferevent *bev, void *ptr) {
   ConnectionMultiApproxBatch* conn = (ConnectionMultiApproxBatch*) ptr;
-  conn->read_callback2();
+  if (conn->options.v1callback) {
+    conn->read_callback2_v1();
+  } else {
+    conn->read_callback2();
+  }
 }
 
 void bev_write_cb_m_approx_batch(struct bufferevent *bev, void *ptr) {
@@ -1640,4 +1752,436 @@ void timer_cb_m_approx_batch(evutil_socket_t fd, short what, void *ptr) {
   ConnectionMultiApproxBatch* conn = (ConnectionMultiApproxBatch*) ptr;
   conn->timer_callback();
 }
+//previous implmentation of read
+//
 
+/**
+ * Tries to consume a binary response (in its entirety) from an evbuffer.
+ *
+ * @param input evBuffer to read response from
+ * @return  true if consumed, false if not enough data in buffer.
+ */
+static bool handle_response(ConnectionMultiApproxBatch *conn, evbuffer *input, bool &done, bool &found, int &opcode, uint32_t &opaque, evicted_t *evict, int level) {
+  // Read the first 24 bytes as a header
+  int length = evbuffer_get_length(input);
+  if (length < 24) return false;
+  binary_header_t* h =
+          reinterpret_cast<binary_header_t*>(evbuffer_pullup(input, 24));
+  //assert(h);
+
+  uint32_t bl = ntohl(h->body_len);
+  uint16_t kl = ntohs(h->key_len);
+  uint8_t el = h->extra_len;
+  // Not whole response
+  int targetLen = 24 + bl;
+  if (length < targetLen) {
+      return false;
+  }
+
+  opcode = h->opcode;
+  opaque = ntohl(h->opaque);
+  uint16_t status = ntohs(h->status);
+#ifdef DEBUGMC
+    fprintf(stderr,"cid: %d handle resp from l%d - opcode: %u opaque: %u keylen: %u extralen: %u datalen: %u status: %u\n",conn->get_cid(),level,
+            h->opcode,ntohl(h->opaque),ntohs(h->key_len),h->extra_len,
+            ntohl(h->body_len),ntohs(h->status));
+#endif
+
+
+  // If something other than success, count it as a miss
+  if (opcode == CMD_GET && status == RESP_NOT_FOUND) {
+      switch(level) {
+          case 1:
+              conn->stats.get_misses_l1++;
+              break;
+          case 2:
+              conn->stats.get_misses_l2++;
+              conn->stats.get_misses++;
+              conn->stats.window_get_misses++;
+              break;
+
+      }
+      found = false;
+      evbuffer_drain(input, targetLen);
+
+  } else if (opcode == CMD_SET && kl > 0) {
+    //first data is extras: clsid, flags, eflags
+    if (evict) {
+        evbuffer_drain(input,24);
+        unsigned char *buf = evbuffer_pullup(input,bl);
+        
+
+        evict->clsid = *((uint32_t*)buf);
+        evict->clsid = ntohl(evict->clsid);
+        buf += 4;
+        
+        evict->serverFlags = *((uint32_t*)buf);
+        evict->serverFlags = ntohl(evict->serverFlags);
+        buf += 4;
+        
+        evict->evictedFlags = *((uint32_t*)buf);
+        evict->evictedFlags = ntohl(evict->evictedFlags);
+        buf += 4;
+
+        
+        evict->evictedKeyLen = kl;
+        evict->evictedKey = (char*)malloc(kl+1);
+        memset(evict->evictedKey,0,kl+1);
+        memcpy(evict->evictedKey,buf,kl);
+        buf += kl;
+
+
+        evict->evictedLen = bl - kl - el;
+        evict->evictedData = (char*)malloc(evict->evictedLen);
+        memcpy(evict->evictedData,buf,evict->evictedLen);
+        evict->evicted = true;
+        //fprintf(stderr,"class: %u, serverFlags: %u, evictedFlags: %u\n",evict->clsid,evict->serverFlags,evict->evictedFlags);
+        evbuffer_drain(input,bl);
+    } else {
+        evbuffer_drain(input, targetLen);
+    }
+  } else if (opcode == CMD_TOUCH && status == RESP_NOT_FOUND) {
+    found = false;
+    evbuffer_drain(input, targetLen);
+  } else if (opcode == CMD_DELETE && status == RESP_NOT_FOUND) {
+    found = false;
+    evbuffer_drain(input, targetLen);
+  } else {
+    evbuffer_drain(input, targetLen);
+  }
+
+  conn->stats.rx_bytes += targetLen;
+  done = true;
+  return true;
+}
+
+/**
+ * Handle incoming data (responses).
+ */
+void ConnectionMultiApproxBatch::read_callback1_v1() {
+  struct evbuffer *input = bufferevent_get_input(bev1);
+
+  Operation *op = NULL;
+  bool done, found;
+
+  //initially assume found (for sets that may come through here)
+  //is this correct? do we want to assume true in case that 
+  //GET was found, but wrong value size (i.e. update value)
+  found = true;
+
+  //if (op_queue.size() == 0) V("Spurious read callback.");
+  bool full_read = true;
+  while (full_read) {
+    
+      
+    int opcode;
+    uint32_t opaque;
+    evicted_t *evict = (evicted_t*)malloc(sizeof(evicted_t));
+    memset(evict,0,sizeof(evicted_t));
+
+    full_read = handle_response(this,input, done, found, opcode, opaque, evict,1);
+    if (full_read) {
+        if (opcode == CMD_NOOP) {
+#ifdef DEBUGMC
+            char out[128];
+            sprintf(out,"conn l1: %u, reading noop\n",cid);
+            write(2,out,strlen(out));
+#endif
+            if (evict->evictedKey) free(evict->evictedKey);
+            if (evict->evictedData) free(evict->evictedData);
+            free(evict);
+            continue;
+        }
+        op = op_queue[1][opaque];
+#ifdef DEBUGMC
+        char out[128];
+        sprintf(out,"conn l1: %u, reading opaque: %u\n",cid,opaque);
+        write(2,out,strlen(out));
+        output_op(op,2,found);
+#endif
+        if (strlen(op->key) < 1) {
+#ifdef DEBUGMC
+            char out2[128];
+            sprintf(out2,"conn l1: %u, bad op: %s\n",cid,op->key);
+            write(2,out2,strlen(out2));
+#endif
+            if (evict->evictedKey) free(evict->evictedKey);
+            if (evict->evictedData) free(evict->evictedData);
+            free(evict);
+            continue;
+        }
+    } else {
+        if (evict) {
+            if (evict->evictedKey) free(evict->evictedKey);
+            if (evict->evictedData) free(evict->evictedData);
+            free(evict);
+        }
+        break;
+    }
+    
+
+    double now = get_time();
+    int wb = 0;
+    if (options.rand_admit) {
+        wb = (rand() % options.rand_admit);
+    }
+    switch (op->type) {
+        case Operation::GET:
+            if (done) {
+
+                int vl = op->valuelen;
+                if ( !found && (options.getset || options.getsetorset) ) {
+                    /* issue a get a l2 */
+                    int flags = OP_clu(op);
+                    issue_get_with_len(op->key,vl,now,false, flags | SRC_L1_M | ITEM_L2 | LOG_OP, op);
+                    op->end_time = now;
+                    this->stats.log_get_l1(*op);
+                    //finish_op(op,0);
+
+                } else {
+                    if (OP_incl(op) && ghits >= gloc) {
+                        //int ret = add_to_touch_keys(string(op->key));
+                        //if (ret == 1) {
+                            issue_touch(op->key,vl,now, ITEM_L2 | SRC_L1_H);
+                        //}
+                        gloc += rand()%(10*2-1)+1;
+                    }
+                    ghits++;
+                    finish_op(op,1);
+                }
+            } else {
+                char out[128];
+                sprintf(out,"conn l1: %u, not done reading, should do something",cid);
+                write(2,out,strlen(out));
+            }
+            break;
+        case Operation::SET:
+            //if (OP_src(op) == SRC_L1_COPY ||
+            //    OP_src(op) == SRC_L2_M) {
+            //    del_copy_keys(string(op->key));
+            //}
+            if (evict->evicted) {
+                string wb_key(evict->evictedKey);
+                if ((evict->evictedFlags & ITEM_INCL) && (evict->evictedFlags & ITEM_DIRTY)) {
+                    //int ret = add_to_wb_keys(wb_key);
+                    //if (ret == 1) {
+                        issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_INCL | LOG_OP | SRC_WB | ITEM_DIRTY);
+                    //}
+                    this->stats.incl_wbs++;
+                } else if (evict->evictedFlags & ITEM_EXCL) {
+                    //fprintf(stderr,"excl writeback %s\n",evict->evictedKey);
+                    //strncpy(wb_key,evict->evictedKey,255);
+                    if ( (options.rand_admit && wb == 0) ||
+                         (options.threshold && (g_key_hist[wb_key] == 1)) ||
+                         (options.wb_all) ) {
+                        //int ret = add_to_wb_keys(wb_key);
+                        //if (ret == 1) {
+                            issue_set(evict->evictedKey, evict->evictedData, evict->evictedLen, now, ITEM_L2 | ITEM_EXCL | LOG_OP | SRC_WB);
+                        //}
+                        this->stats.excl_wbs++;
+                    }
+                }
+                if (OP_src(op) == SRC_DIRECT_SET) {
+                    if ( (evict->serverFlags & ITEM_SIZE_CHANGE) || ((evict->serverFlags & ITEM_WAS_HIT) == 0)) {
+                        this->stats.set_misses_l1++;
+                    } else if (OP_excl(op) && evict->serverFlags & ITEM_WAS_HIT) {
+                        this->stats.set_excl_hits_l1++;
+                    } else if (OP_incl(op) && evict->serverFlags & ITEM_WAS_HIT) {
+                        this->stats.set_incl_hits_l1++;
+                    }
+                }
+            }
+            finish_op(op,1);
+            break;
+        case Operation::TOUCH:
+            finish_op(op,1);
+            break;
+        default: 
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
+            DIE("not implemented");
+    }
+
+    if (evict) {
+        if (evict->evictedKey) free(evict->evictedKey);
+        if (evict->evictedData) free(evict->evictedData);
+        free(evict);
+    }
+
+  }
+  
+
+  double now = get_time();
+
+  last_tx = now;
+  stats.log_op(op_queue_size[1]);
+  stats.log_op(op_queue_size[2]);
+  //for (int i = 1; i <= 2; i++) {
+  //    fprintf(stderr,"max issue buf n[%d]: %u\n",i,max_n[i]);
+  //}
+  drive_write_machine();
+  
+  // update events
+  //if (bev != NULL) {
+  //    // no pending response (nothing to read) and output buffer empty (nothing to write)
+  //    if ((op_queue.size() == 0) && (evbuffer_get_length(bufferevent_get_output(bev)) == 0)) {
+  //        bufferevent_disable(bev, EV_WRITE|EV_READ);
+  //    }
+  //}
+}
+
+/**
+ * Handle incoming data (responses).
+ */
+void ConnectionMultiApproxBatch::read_callback2_v1() {
+  struct evbuffer *input = bufferevent_get_input(bev2);
+
+  Operation *op = NULL;
+  bool done, found;
+
+  //initially assume found (for sets that may come through here)
+  //is this correct? do we want to assume true in case that 
+  //GET was found, but wrong value size (i.e. update value)
+  found = true;
+
+
+  //if (op_queue.size() == 0) V("Spurious read callback.");
+  bool full_read = true;
+  while (full_read) {
+    
+      
+    int opcode;
+    uint32_t opaque;
+    full_read = handle_response(this,input, done, found, opcode, opaque, NULL,2);
+    if (full_read) {
+        if (opcode == CMD_NOOP) {
+#ifdef DEBUGMC
+            char out[128];
+            sprintf(out,"conn l2: %u, reading noop\n",cid);
+            write(2,out,strlen(out));
+#endif
+            continue;
+        }
+        op = op_queue[2][opaque];
+#ifdef DEBUGMC
+        char out[128];
+        sprintf(out,"conn l2: %u, reading opaque: %u\n",cid,opaque);
+        write(2,out,strlen(out));
+        output_op(op,2,found);
+#endif
+        if (strlen(op->key) < 1) {
+#ifdef DEBUGMC
+            char out2[128];
+            sprintf(out2,"conn l2: %u, bad op: %s\n",cid,op->key);
+            write(2,out2,strlen(out2));
+#endif
+            continue;
+        }
+    } else {
+        break;
+    }
+    
+
+    double now = get_time();
+    switch (op->type) {
+        case Operation::GET:
+            if (done) {
+                if ( !found && (options.getset || options.getsetorset) ) {//  &&
+                    //(options.twitter_trace != 1)) {
+                    int valuelen = op->valuelen;
+                    int index = lrand48() % (1024 * 1024);
+                    int flags = OP_clu(op) | SRC_L2_M | LOG_OP;
+                    //int ret = add_to_copy_keys(string(op->key));
+                    //if (ret == 1) {
+                        issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L1);
+                        if (OP_incl(op)) {
+                            issue_set(op->key, &random_char[index], valuelen, now, flags | ITEM_L2);
+                            last_quiet2 = false; 
+                        }
+                    //}
+                    last_quiet1 = false; 
+                    finish_op(op,0); // sets read_state = IDLE
+                    
+                } else {
+                    if (found) {
+                        int valuelen = op->valuelen;
+                        int index = lrand48() % (1024 * 1024);
+                        int flags = OP_clu(op) | ITEM_L1 | SRC_L1_COPY;
+                        string key = string(op->key);
+                        const char *data = &random_char[index];
+                        //int ret = add_to_copy_keys(string(op->key));
+                        //if (ret == 1) {
+                            issue_set(op->key,data,valuelen, now, flags);
+                        //}
+                        this->stats.copies_to_l1++;
+                        //djb: this is automatically done in the L2 server
+                        //if (OP_excl(op)) { //djb: todo should we delete here for approx or just let it die a slow death?
+                        //    issue_delete(op->key,now, ITEM_L2 | SRC_L1_COPY );
+                        //}
+                        finish_op(op,1);
+
+                    } else {
+                        finish_op(op,0);
+                    }
+                }
+            } else {
+                char out[128];
+                sprintf(out,"conn l2: %u, not done reading, should do something",cid);
+                write(2,out,strlen(out));
+            }
+            break;
+        case Operation::SET:
+            //if (OP_src(op) == SRC_WB) {
+            //    del_wb_keys(string(op->key));
+            //}
+            finish_op(op,1);
+            break;
+        case Operation::TOUCH:
+            if (OP_src(op) == SRC_DIRECT_SET || SRC_L1_H) {
+                int valuelen = op->valuelen;
+                if (!found) {
+                    int index = lrand48() % (1024 * 1024);
+                    issue_set(op->key, &random_char[index],valuelen,now, ITEM_INCL | ITEM_L2 | LOG_OP | SRC_L2_M);
+                    this->stats.set_misses_l2++;
+                } else {
+                    if (OP_src(op) == SRC_DIRECT_SET) {
+                        issue_touch(op->key,valuelen,now, ITEM_L1 | SRC_L2_H | ITEM_DIRTY);
+                    }
+                }
+                //del_touch_keys(string(op->key));
+            }
+            finish_op(op,0);
+            break;
+        case Operation::DELETE:
+            //check to see if it was a hit
+            //fprintf(stderr," del %s -- %d from %d\n",op->key.c_str(),found,OP_src(op));
+            if (OP_src(op) == SRC_DIRECT_SET) {
+                if (found) {
+                    this->stats.delete_hits_l2++;
+                } else {
+                    this->stats.delete_misses_l2++;
+                }
+            }
+            finish_op(op,1);
+            break;
+        default: 
+            fprintf(stderr,"op: %p, key: %s opaque: %u\n",(void*)op,op->key,op->opaque);
+            DIE("not implemented");
+    }
+
+  }
+
+  double now = get_time();
+
+  last_tx = now;
+  stats.log_op(op_queue_size[2]);
+  stats.log_op(op_queue_size[1]);
+  drive_write_machine();
+  
+  // update events
+  //if (bev != NULL) {
+  //    // no pending response (nothing to read) and output buffer empty (nothing to write)
+  //    if ((op_queue.size() == 0) && (evbuffer_get_length(bufferevent_get_output(bev)) == 0)) {
+  //        bufferevent_disable(bev, EV_WRITE|EV_READ);
+  //    }
+  //}
+}
