@@ -44,8 +44,8 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = '-O3 -Wall -g --std=c++17 -lstdc++fs')
-env.Append(CPPFLAGS = '-O3 -Wall -g --std=c++17 -lstdc++fs')
+env.Append(CFLAGS = '-O0 -Wall -g --std=c++17 -lstdc++fs')
+env.Append(CPPFLAGS = '-O0 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CFLAGS = ' -O3 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CPPFLAGS = ' -O3 -Wall -g --std=c++17 -lstdc++fs')
 #env.Append(CFLAGS = ' -O3 -Wall -g')

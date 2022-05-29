@@ -91,7 +91,7 @@
 #define OP_excl(op) ((op)->flags & ITEM_EXCL)
 #define OP_set_flag(op,flag) ((op))->flags |= flag;
 
-//#define DEBUGMC
+#define DEBUGMC
 //#define DEBUGS
 //using namespace folly;
 using namespace moodycamel;
@@ -761,9 +761,20 @@ int ConnectionMultiApproxShm::issue_get_with_len(Operation *pop, double now, boo
   }
   h.opaque = htonl(pop->opaque);
  
+  int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+  if (res != 24) {
+    fprintf(stderr,"failed offer 24 get level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+  if (res != keylen) {
+    fprintf(stderr,"failed offer %d get level %d\n",keylen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
   pthread_mutex_unlock(lock_out[level]);
 
   stats.tx_bytes += 24 + keylen;
@@ -828,9 +839,20 @@ int ConnectionMultiApproxShm::issue_get_with_len(const char* key, int valuelen, 
   h.opaque = htonl(pop->opaque);
   
 
+  int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)key,keylen);
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+  if (res != 24) {
+    fprintf(stderr,"failed offer 24 get level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+  if (res != keylen) {
+    fprintf(stderr,"failed offer %d get level %d\n",keylen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
   pthread_mutex_unlock(lock_out[level]);
   
   stats.tx_bytes += 24 + keylen;
@@ -890,10 +912,26 @@ int ConnectionMultiApproxShm::issue_touch(const char* key, int valuelen, double 
       exp = htonl(flags); 
   }
 
+  int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)key,keylen);
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+  if (res != 24) {
+    fprintf(stderr,"failed offer 24 touch level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  if (res != keylen) {
+    bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
+    fprintf(stderr,"failed offer 4 touch level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+  if (res != keylen) {
+    fprintf(stderr,"failed offer %d touch level %d\n",keylen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
   pthread_mutex_unlock(lock_out[level]);
   
   stats.tx_bytes += 24 + keylen;
@@ -1012,13 +1050,38 @@ int ConnectionMultiApproxShm::issue_set(Operation *pop, const char* value, doubl
   uint32_t f = htonl(flags);
   uint32_t exp = 0;
   
-  
+  int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,pop->valuelen);
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+  if (res != 24) {
+    fprintf(stderr,"failed offer 24 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
+  if (res != 4) {
+    fprintf(stderr,"failed offer 4 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
+  if (res != 4) {
+    fprintf(stderr,"failed offer 4 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+  if (res != keylen) {
+    fprintf(stderr,"failed offer %d set level %d\n",keylen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,pop->valuelen);
+  if (res != pop->valuelen) {
+    fprintf(stderr,"failed offer %d set level %d\n",pop->valuelen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
   pthread_mutex_unlock(lock_out[level]);
 
   stats.tx_bytes += pop->valuelen + 32 + keylen;
@@ -1069,13 +1132,38 @@ int ConnectionMultiApproxShm::issue_set(const char* key, const char* value, int 
   uint32_t f = htonl(flags);
   uint32_t exp = 0;
   
-  
+  int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)key,keylen);
-  bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,length);
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+  if (res != 24) {
+    fprintf(stderr,"failed offer 24 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
+  if (res != 4) {
+    fprintf(stderr,"failed offer 4 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
+  if (res != 4) {
+    fprintf(stderr,"failed offer 4 set level %d\n",level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)key,keylen);
+  if (res != keylen) {
+    fprintf(stderr,"failed offer %d set level %d\n",keylen,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
+  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,length);
+  if (res != length) {
+    fprintf(stderr,"failed offer %d set level %d\n",length,level);
+    pthread_mutex_unlock(lock_out[level]);
+    return 0;
+  }
   pthread_mutex_unlock(lock_out[level]);
 
   stats.tx_bytes += length + 32 + keylen;
@@ -1268,6 +1356,7 @@ void ConnectionMultiApproxShm::drive_write_machine_shm(double now) {
             trace_queue->pop();
             int l2issued = issue_op(Op);
             nissuedl2 += l2issued;
+            nissued++;
         }
 
         //wait for response (at least nissued)
@@ -1398,7 +1487,10 @@ int ConnectionMultiApproxShm::read_response_l1() {
       memcpy(input,in,24);
   }
   pthread_mutex_unlock(lock_in[1]);
- 
+  if (in == NULL) {
+      return 0;
+  }
+
   uint32_t responses_expected = op_queue_size[1];
   Operation *op = NULL;
   bool done, found;
@@ -1546,20 +1638,23 @@ int ConnectionMultiApproxShm::read_response_l1() {
     }
     pthread_mutex_lock(lock_in[1]);
     unsigned char *in = bipbuf_poll(bipbuf_in[1],24);
-    int tries = 0;
-    while (input == NULL) {
-        tries++;
-        if (tries > 1000) {
-            fprintf(stderr,"more than 1000 tries for header cid: %d\n",cid);
-            break;
-        }
-        in = bipbuf_poll(bipbuf_in[1],24);
-        
-    }
+    //int tries = 0;
+    //while (input == NULL) {
+    //    tries++;
+    //    if (tries > 1000) {
+    //        fprintf(stderr,"more than 1000 tries for header cid: %d\n",cid);
+    //        break;
+    //    }
+    //    in = bipbuf_poll(bipbuf_in[1],24);
+    //    
+    //}
     if (in) {
         memcpy(input,in,24);
+        pthread_mutex_unlock(lock_in[1]);
+    } else {
+        pthread_mutex_unlock(lock_in[1]);
+        break; 
     }
-    pthread_mutex_unlock(lock_in[1]);
 
   }
   return l2reqs;
@@ -1578,6 +1673,9 @@ void ConnectionMultiApproxShm::read_response_l2() {
       memcpy(input,in,24);
   }
   pthread_mutex_unlock(lock_in[2]);
+  if (in == NULL) {
+      return;
+  }
  
   uint32_t responses_expected = op_queue_size[2];
   Operation *op = NULL;
@@ -1706,20 +1804,23 @@ void ConnectionMultiApproxShm::read_response_l2() {
 
     pthread_mutex_lock(lock_in[2]);
     unsigned char *in = bipbuf_poll(bipbuf_in[2],24);
-    int tries = 0;
-    while (in == NULL) {
-        tries++;
-        if (tries > 2000) {
-            fprintf(stderr,"more than 2000 tries for header cid: %d\n",cid);
-            break;
-        }
-        in = bipbuf_poll(bipbuf_in[2],24);
-        
-    }
+    //int tries = 0;
+    //while (in == NULL) {
+    //    tries++;
+    //    if (tries > 2000) {
+    //        fprintf(stderr,"more than 2000 tries for header cid: %d\n",cid);
+    //        break;
+    //    }
+    //    in = bipbuf_poll(bipbuf_in[2],24);
+    //    
+    //}
     if (in) {
         memcpy(input,in,24);
+        pthread_mutex_unlock(lock_in[2]);
+    } else {
+        pthread_mutex_unlock(lock_in[2]);
+        break; 
     }
-    pthread_mutex_unlock(lock_in[2]);
 
   }
 }
