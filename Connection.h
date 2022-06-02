@@ -802,6 +802,7 @@ private:
   pthread_mutex_t* lock;
   unordered_map<string,vector<Operation*>> *g_wb_keys;
   queue<Operation*> *trace_queue;
+  queue<Operation*> extra_queue;
 
   // state machine functions / event processing
   void pop_op(Operation *op);
@@ -821,6 +822,8 @@ private:
   int issue_get_with_len(Operation *pop, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
   int issue_set(const char* key, const char* value, int length, double now, uint32_t flags);
   int issue_set(Operation *pop, const char* value, double now, uint32_t flags);
+  int offer_set(Operation *pop, int extra = 0);
+  int offer_get(Operation *pop, int extra = 0);
 
   int read_response_l1(); 
   void read_response_l2();

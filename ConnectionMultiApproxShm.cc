@@ -91,7 +91,7 @@
 #define OP_excl(op) ((op)->flags & ITEM_EXCL)
 #define OP_set_flag(op,flag) ((op))->flags |= flag;
 
-#define DEBUGMC
+//#define DEBUGMC
 //#define DEBUGS
 //using namespace folly;
 using namespace moodycamel;
@@ -583,128 +583,49 @@ void ConnectionMultiApproxShm::reset() {
 
 
 /**
- * Get/Set or Set Style
- * If a GET command: Issue a get first, if not found then set
- * If trace file (or prob. write) says to set, then set it
+ * Issue a get request to the server.
  */
-int ConnectionMultiApproxShm::issue_getsetorset(double now) {
+int ConnectionMultiApproxShm::offer_get(Operation *pop, int extra) {
+  
+  uint16_t keylen = strlen(pop->key);
+  int level = FLAGS_level(pop->flags);
+
+
+  // each line is 4-bytes
+  binary_header_t h = { 0x80, CMD_GET, htons(keylen),
+                        0x00, 0x00, htons(0),
+                        htonl(keylen) };
+  //if (quiet) {
+  //    h.opcode = CMD_GETQ;
+  //}
+  h.opaque = htonl(pop->opaque);
  
-
-    
-    int ret = 0;
-    int nissued = 0;
-    
-    //while (nissued < 1) {
-    
-    //pthread_mutex_lock(lock);
-        //if (!trace_queue->empty()) {
-            
-            /* check if in global wb queue */
-            //double percent = (double)total/((double)trace_queue_n) * 100;
-            //if (percent > o_percent+2) {
-            //    //update the percentage table and see if we should execute
-            //    if (options.ratelimit) {
-            //        double min_percent = 1000;
-            //        auto it = cid_rate.begin();
-            //        while (it != cid_rate.end()) {
-            //           if (it->second < min_percent) {
-            //               min_percent = it->second;
-            //           }
-            //           ++it;
-            //        }
-
-            //        if (percent > min_percent+2) {
-            //            struct timeval tv;
-            //            tv.tv_sec = 0;
-            //            tv.tv_usec = 100;
-            //            int good = 0;
-            //            if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-            //                good = evtimer_add(timer, &tv);
-            //            }
-            //            if (good != 0) {
-            //                fprintf(stderr,"eventimer is messed up!\n");
-            //                return 2;
-            //            }
-            //            return 1;
-            //        }
-            //    }
-            //    cid_rate.insert( {cid, percent});
-            //    fprintf(stderr,"%f,%d,%.4f\n",now,cid,percent);
-            //    o_percent = percent;
-            //}
-            //
-            
-            Operation *Op = trace_queue->front(); 
-            //Operation *Op = g_trace_queue.dequeue(); 
-            
-            if (Op == NULL || trace_queue->size() <= 0 || Op->type == Operation::SASL) {
-                eof = 1;
-                cid_rate.insert( {cid, 100 } );
-                fprintf(stderr,"cid %d done\n",cid);
-                string op_queue1;
-                string op_queue2;
-                for (int j = 0; j < 2; j++) {
-                    for (int i = 0; i < OPAQUE_MAX; i++) {
-                        if (op_queue[j+1][i] != NULL) {
-                            if (j == 0) {
-                                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
-                            } else {
-                                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
-                            }
-                        }
-                    }
-                }
-                fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
-                return 1;
-            } 
-            
-            trace_queue->pop();
-
-            
-            //trace_queue->pop();
-
-            //pthread_mutex_lock(lock);
-            //auto check = wb_keys.find(string(Op->key));
-            //if (check != wb_keys.end()) {
-            //    check->second.push_back(Op);
-            //    return 0;
-            //}
-                //pthread_mutex_unlock(lock);
-                //pthread_mutex_unlock(lock);
-                //struct timeval tv;
-                //double delay; 
-                //delay = last_rx + 0.00025 - now;
-                //double_to_tv(delay,&tv);
-                //int good = 0;
-                ////if (!event_pending(timer, EV_TIMEOUT, NULL)) {
-                //good = evtimer_add(timer, &tv);
-                ////}
-                //if (good != 0) {
-                //    fprintf(stderr,"eventimer is messed up in checking for key: %s\n",Op->key);
-                //    return 2;
-                //}
-                //return 1;
-            //} else {
-                //pthread_mutex_unlock(lock);
-            int issued = issue_op(Op);
-            if (issued) {
-                nissued++;
-                total++;
-            } else {
-                fprintf(stderr,"failed to issue line: %s, vl: %d\n",Op->key,Op->valuelen);
-            }
-            //}
-
-        //} else {
-        //    return 1;
-        //}
-    //}
-    //if (last_quiet1) {
-    //    issue_noop(now,1);
-    //    last_quiet1 = false;
-    //}
-
-    return ret;
+  int res = 0;
+  pthread_mutex_lock(lock_out[level]);
+  int gtg = bipbuf_unused(bipbuf_out[level]) > (int)(24+keylen) ? 1 : 0;
+  if (gtg) {
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+     if (res != 24) {
+       fprintf(stderr,"failed offer 24 get level %d\n",level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+     if (res != keylen) {
+       fprintf(stderr,"failed offer %d get level %d\n",keylen,level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     if (extra == 1) {
+         extra_queue.pop();
+     }
+  } else {
+      if (extra == 0) {
+        extra_queue.push(pop);
+      }
+  }
+  pthread_mutex_unlock(lock_out[level]);
+  return 1;
 
 }
 
@@ -738,7 +659,6 @@ int ConnectionMultiApproxShm::issue_get_with_len(Operation *pop, double now, boo
   }
 
   op_queue[level][pop->opaque] = pop;
-  //op_queue[level].push(op);
   op_queue_size[level]++;
 #ifdef DEBUGS
   fprintf(stderr,"cid: %d issing get: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,pop->key,pop->valuelen,level,flags,pop->opaque);
@@ -748,36 +668,9 @@ int ConnectionMultiApproxShm::issue_get_with_len(Operation *pop, double now, boo
       opaque[level] = 1;
   }
 
-  //if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  uint16_t keylen = strlen(pop->key);
 
-
-  // each line is 4-bytes
-  binary_header_t h = { 0x80, CMD_GET, htons(keylen),
-                        0x00, 0x00, htons(0),
-                        htonl(keylen) };
-  if (quiet) {
-      h.opcode = CMD_GETQ;
-  }
-  h.opaque = htonl(pop->opaque);
- 
-  int res = 0;
-  pthread_mutex_lock(lock_out[level]);
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  if (res != 24) {
-    fprintf(stderr,"failed offer 24 get level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
-  if (res != keylen) {
-    fprintf(stderr,"failed offer %d get level %d\n",keylen,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  pthread_mutex_unlock(lock_out[level]);
-
-  stats.tx_bytes += 24 + keylen;
+  offer_get(pop,0);
+  stats.tx_bytes += 24 + strlen(pop->key);
   return 1;
 }
 
@@ -815,7 +708,6 @@ int ConnectionMultiApproxShm::issue_get_with_len(const char* key, int valuelen, 
       pop->l1 = l1;
   }
   op_queue[level][pop->opaque] = pop;
-  //op_queue[level].push(op);
   op_queue_size[level]++;
 
 #ifdef DEBUGS
@@ -826,36 +718,9 @@ int ConnectionMultiApproxShm::issue_get_with_len(const char* key, int valuelen, 
       opaque[level] = 1;
   }
 
-  //if (read_state == IDLE) read_state = WAITING_FOR_GET;
-  uint16_t keylen = strlen(key);
-
-  // each line is 4-bytes
-  binary_header_t h = { 0x80, CMD_GET, htons(keylen),
-                        0x00, 0x00, htons(0),
-                        htonl(keylen) };
-  if (quiet) {
-      h.opcode = CMD_GETQ;
-  }
-  h.opaque = htonl(pop->opaque);
   
-
-  int res = 0;
-  pthread_mutex_lock(lock_out[level]);
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  if (res != 24) {
-    fprintf(stderr,"failed offer 24 get level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
-  if (res != keylen) {
-    fprintf(stderr,"failed offer %d get level %d\n",keylen,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  pthread_mutex_unlock(lock_out[level]);
-  
-  stats.tx_bytes += 24 + keylen;
+  offer_get(pop,0);
+  stats.tx_bytes += 24 + strlen(pop->key);;
   return 1;
 }
 
@@ -1037,55 +902,84 @@ int ConnectionMultiApproxShm::issue_set(Operation *pop, const char* value, doubl
   if (opaque[level] > OPAQUE_MAX) {
       opaque[level] = 1;
   }
+  
+  offer_set(pop);
+
+
+  stats.tx_bytes += pop->valuelen + 32 + strlen(pop->key);
+  return 1;
+}
+
+/**
+ * Issue a set request to the server.
+ */
+int ConnectionMultiApproxShm::offer_set(Operation *pop, int extra) {
 
   uint16_t keylen = strlen(pop->key);
-  
+  uint32_t length = pop->valuelen;
+  int level = FLAGS_level(pop->flags);
 
   // each line is 4-bytes
   binary_header_t h = { 0x80, CMD_SET, htons(keylen),
                         0x08, 0x00, htons(0),
-                        htonl(keylen + 8 + pop->valuelen) }; 
+                        htonl(keylen + 8 + length) }; 
   h.opaque = htonl(pop->opaque);
   
-  uint32_t f = htonl(flags);
+  uint32_t f = htonl(pop->flags);
   uint32_t exp = 0;
-  
+  int ret = 0;
   int res = 0;
   pthread_mutex_lock(lock_out[level]);
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  if (res != 24) {
-    fprintf(stderr,"failed offer 24 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
-  if (res != 4) {
-    fprintf(stderr,"failed offer 4 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
-  if (res != 4) {
-    fprintf(stderr,"failed offer 4 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
-  if (res != keylen) {
-    fprintf(stderr,"failed offer %d set level %d\n",keylen,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,pop->valuelen);
-  if (res != pop->valuelen) {
-    fprintf(stderr,"failed offer %d set level %d\n",pop->valuelen,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
+  int gtg = bipbuf_unused(bipbuf_out[level]) > (int)(32+pop->valuelen) ? 1 : 0;
+  if (gtg) {
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
+     if (res != 24) {
+       fprintf(stderr,"failed offer 24 set level %d\n",level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
+     if (res != 4) {
+       fprintf(stderr,"failed offer 4 set level %d\n",level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
+     if (res != 4) {
+       fprintf(stderr,"failed offer 4 set level %d\n",level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)pop->key,keylen);
+     if (res != keylen) {
+       fprintf(stderr,"failed offer %d set level %d\n",keylen,level);
+       pthread_mutex_unlock(lock_out[level]);
+       return 0;
+     }
+     int i = 0;
+     int index = lrand48() % (1024 * 1024);
+     const char *value = &random_char[index];
+     while ((res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,length)) != (int)length) {
+       pthread_mutex_unlock(lock_out[level]);
+       i++;
+       if (i > 1000) {
+           fprintf(stderr,"failed offer %d set level %d\n",length,level);
+           break;
+       }
+       pthread_mutex_lock(lock_out[level]);
+     }
+     if (extra == 1) {
+         extra_queue.pop();
+     }
+     ret = 1;
+  } else {
+      if (extra == 0) {
+        extra_queue.push(pop);
+      }
+      ret = 0;
   }
   pthread_mutex_unlock(lock_out[level]);
-
-  stats.tx_bytes += pop->valuelen + 32 + keylen;
-  return 1;
+  return ret;
 }
 
 /**
@@ -1111,7 +1005,6 @@ int ConnectionMultiApproxShm::issue_set(const char* key, const char* value, int 
   pop->flags = flags;
   pop->clsid = get_class(length,strlen(key));
   op_queue[level][pop->opaque] = pop;
-  //op_queue[level].push(op);
   op_queue_size[level]++;
 #ifdef DEBUGS
   fprintf(stderr,"cid: %d issing set: %s, size: %u, level %d, flags: %d, opaque: %d\n",cid,key,length,level,flags,pop->opaque);
@@ -1121,52 +1014,8 @@ int ConnectionMultiApproxShm::issue_set(const char* key, const char* value, int 
       opaque[level] = 1;
   }
 
-  uint16_t keylen = strlen(key);
-
-  // each line is 4-bytes
-  binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, htons(0),
-                        htonl(keylen + 8 + length) }; 
-  h.opaque = htonl(pop->opaque);
-  
-  uint32_t f = htonl(flags);
-  uint32_t exp = 0;
-  
-  int res = 0;
-  pthread_mutex_lock(lock_out[level]);
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&h,24);
-  if (res != 24) {
-    fprintf(stderr,"failed offer 24 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&f,4);
-  if (res != 4) {
-    fprintf(stderr,"failed offer 4 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)&exp,4);
-  if (res != 4) {
-    fprintf(stderr,"failed offer 4 set level %d\n",level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)key,keylen);
-  if (res != keylen) {
-    fprintf(stderr,"failed offer %d set level %d\n",keylen,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  res = bipbuf_offer(bipbuf_out[level],(const unsigned char*)value,length);
-  if (res != length) {
-    fprintf(stderr,"failed offer %d set level %d\n",length,level);
-    pthread_mutex_unlock(lock_out[level]);
-    return 0;
-  }
-  pthread_mutex_unlock(lock_out[level]);
-
-  stats.tx_bytes += length + 32 + keylen;
+  offer_set(pop);
+  stats.tx_bytes += length + 32 + strlen(key);
   return 1;
 }
 
@@ -1327,9 +1176,23 @@ bool ConnectionMultiApproxShm::check_exit_condition(double now) {
 void ConnectionMultiApproxShm::drive_write_machine_shm(double now) {
 
     while (trace_queue->size() > 0) {
+        int extra_tries = extra_queue.size();
+        for (int i = 0; i < extra_tries; i++) {
+            Operation *Op = extra_queue.front(); 
+            switch(Op->type)
+            {
+                case Operation::GET:
+                   offer_get(Op,1);
+                   break;
+                case Operation::SET:
+                   offer_set(Op,1);
+                   break;
+            }
+        }
+
         int nissued = 0;
         int nissuedl2 = 0;
-        while (nissued < options.depth) {
+        while (nissued < options.depth && extra_queue.size() == 0) {
             Operation *Op = trace_queue->front(); 
             
             if (Op == NULL || trace_queue->size() <= 0 || Op->type == Operation::SASL) {
@@ -1350,13 +1213,30 @@ void ConnectionMultiApproxShm::drive_write_machine_shm(double now) {
                     }
                 }
                 fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
-                break;
+                return;
             } 
-            
-            trace_queue->pop();
-            int l2issued = issue_op(Op);
-            nissuedl2 += l2issued;
-            nissued++;
+            int gtg = 0;
+            pthread_mutex_lock(lock_out[1]);
+            switch(Op->type)
+            {
+                case Operation::GET:
+                   gtg = bipbuf_unused(bipbuf_out[1]) > (int)(24+strlen(Op->key)) ? 1 : 0;
+                   break;
+                case Operation::SET:
+                   gtg = bipbuf_unused(bipbuf_out[1]) > (int)(32+Op->valuelen) ? 1 : 0;
+                   break;
+            }
+            pthread_mutex_unlock(lock_out[1]);
+
+
+            if (gtg) {
+                trace_queue->pop();
+                int l2issued = issue_op(Op);
+                nissuedl2 += l2issued;
+                nissued++;
+            } else {
+                break;
+            }
         }
 
         //wait for response (at least nissued)
@@ -1402,22 +1282,24 @@ static int handle_response(ConnectionMultiApproxShm *conn, unsigned char *input,
 #endif
 
   pthread_mutex_lock(conn->lock_in[level]);
-  unsigned char *abuf = bipbuf_poll(conn->bipbuf_in[level],bl);
+  unsigned char *abuf;
   int tries = 0;
-  while (abuf == NULL) {
+  while ((abuf = bipbuf_poll(conn->bipbuf_in[level],targetLen)) == NULL) {
+      pthread_mutex_unlock(conn->lock_in[level]);
       tries++;
-      if (tries > 1000) {
-          fprintf(stderr,"more than 1000 tries for cid: %d\n",conn->get_cid());
-          break;
+      if (tries > 100) {
+          //fprintf(stderr,"more than 10000 tries for cid: %d for length %d\n",conn->get_cid(),targetLen);
+          return 0;
+
       }
-      abuf = bipbuf_poll(conn->bipbuf_in[level],bl);
-      
+      pthread_mutex_lock(conn->lock_in[level]);
   }
   unsigned char bbuf[1024*1024];
   unsigned char *buf = (unsigned char*) &bbuf;
   if (abuf != NULL) {
-    memcpy(bbuf,abuf,bl);
+    memcpy(bbuf,abuf,targetLen);
   }
+  buf += 24;
   pthread_mutex_unlock(conn->lock_in[level]);
 
 
@@ -1482,7 +1364,7 @@ int ConnectionMultiApproxShm::read_response_l1() {
     //maybe need mutex etc.
   unsigned char input[64];
   pthread_mutex_lock(lock_in[1]);
-  unsigned char *in = bipbuf_poll(bipbuf_in[1],24);
+  unsigned char *in = bipbuf_peek(bipbuf_in[1],24);
   if (in) {
       memcpy(input,in,24);
   }
@@ -1544,6 +1426,7 @@ int ConnectionMultiApproxShm::read_response_l1() {
             if (evict->evictedData) free(evict->evictedData);
             free(evict);
         }
+        return 0;
     }
     
 
@@ -1637,7 +1520,7 @@ int ConnectionMultiApproxShm::read_response_l1() {
         free(evict);
     }
     pthread_mutex_lock(lock_in[1]);
-    unsigned char *in = bipbuf_poll(bipbuf_in[1],24);
+    unsigned char *in = bipbuf_peek(bipbuf_in[1],24);
     //int tries = 0;
     //while (input == NULL) {
     //    tries++;
@@ -1668,7 +1551,7 @@ void ConnectionMultiApproxShm::read_response_l2() {
     //maybe need mutex etc.
   unsigned char input[64];
   pthread_mutex_lock(lock_in[2]);
-  unsigned char *in = bipbuf_poll(bipbuf_in[2],24);
+  unsigned char *in = bipbuf_peek(bipbuf_in[2],24);
   if (in) {
       memcpy(input,in,24);
   }
@@ -1718,7 +1601,9 @@ void ConnectionMultiApproxShm::read_response_l2() {
             continue;
         }
         responses++;
-    } 
+    } else {
+        return;
+    }
     
 
     double now = get_time();
@@ -1803,7 +1688,7 @@ void ConnectionMultiApproxShm::read_response_l2() {
     }
 
     pthread_mutex_lock(lock_in[2]);
-    unsigned char *in = bipbuf_poll(bipbuf_in[2],24);
+    unsigned char *in = bipbuf_peek(bipbuf_in[2],24);
     //int tries = 0;
     //while (in == NULL) {
     //    tries++;

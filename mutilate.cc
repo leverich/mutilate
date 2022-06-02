@@ -536,7 +536,7 @@ int main(int argc, char **argv) {
 
   vector<string> servers;
   for (unsigned int s = 0; s < args.server_given; s++) {
-    if (options.unix_socket) {
+    if (options.unix_socket || args.use_shm_given) {
         servers.push_back(string(args.server_arg[s]));
     } else {
         servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
@@ -1786,7 +1786,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && args.approx_given && !args.approx_batch_given) {
+  } else if (servers.size() == 2 && args.approx_given && !args.approx_batch_given && !args.use_shm_given) {
     vector<ConnectionMultiApprox*> connections;
     vector<ConnectionMultiApprox*> server_lead;
 
@@ -1944,7 +1944,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     evdns_base_free(evdns, 0);
     event_base_free(base);
   
-  } else if (servers.size() == 2 && args.approx_batch_given) {
+  } else if (servers.size() == 2 && args.approx_batch_given && !args.use_shm_given) {
     vector<ConnectionMultiApproxBatch*> connections;
     vector<ConnectionMultiApproxBatch*> server_lead;
 
