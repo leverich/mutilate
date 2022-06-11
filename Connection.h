@@ -733,6 +733,8 @@ public:
   bipbuf_t* bipbuf_out[3];
   pthread_mutex_t* lock_in[3];
   pthread_mutex_t* lock_out[3];
+  pthread_cond_t* cond_in[3];
+  pthread_cond_t* cond_out[3];
 
 private:
   string hostname1;
@@ -824,6 +826,174 @@ private:
   int issue_set(Operation *pop, const char* value, double now, uint32_t flags);
   int offer_set(Operation *pop, int extra = 0);
   int offer_get(Operation *pop, int extra = 0);
+
+  int read_response_l1(); 
+  void read_response_l2();
+  // protocol fucntions
+  int set_request_ascii(const char* key, const char* value, int length);
+  int set_request_binary(const char* key, const char* value, int length);
+  int set_request_resp(const char* key, const char* value, int length);
+  
+  int get_request_ascii(const char* key);
+  int get_request_binary(const char* key);
+  int get_request_resp(const char* key);
+
+  bool consume_binary_response(evbuffer *input);
+  bool consume_ascii_line(evbuffer *input, bool &done);
+  bool consume_resp_line(evbuffer *input, bool &done);
+};
+
+class ConnectionMultiApproxBatchShm {
+public:
+  ConnectionMultiApproxBatchShm(options_t options, bool sampling = true);
+
+  ~ConnectionMultiApproxBatchShm();
+
+  int do_connect();
+
+  double start_time; // Time when this connection began operations.
+  ConnectionStats stats;
+  options_t options;
+
+  bool is_ready() { return read_state == IDLE; }
+  void set_priority(int pri);
+
+  void start_loading();
+  void reset();
+  bool check_exit_condition(double now = 0.0);
+
+  void read_callback1();
+  void read_callback2();
+  
+  int eof;
+  uint32_t get_cid();
+  //void set_queue(ConcurrentQueue<string> *a_trace_queue);
+  int  add_to_wb_keys(string wb_key);
+  int  add_to_copy_keys(string key);
+  int  add_to_touch_keys(string key);
+  void del_wb_keys(string wb_key);
+  void del_copy_keys(string key);
+  void del_touch_keys(string key);
+  void set_g_wbkeys(unordered_map<string,vector<Operation*>> *a_wb_keys);
+  void set_queue(queue<Operation*> *a_trace_queue);
+  void set_lock(pthread_mutex_t* a_lock);
+  size_t handle_response_batch(unsigned char *rbuf_pos, resp_t *resp, 
+                                    size_t read_bytes, size_t consumed_bytes,
+                                    int level, int extra);
+  void drive_write_machine_shm(double now = 0.0);
+  bipbuf_t* bipbuf_in[3];
+  bipbuf_t* bipbuf_out[3];
+  pthread_mutex_t* lock_in[3];
+  pthread_mutex_t* lock_out[3];
+  pthread_cond_t* cond_in[3];
+  pthread_cond_t* cond_out[3];
+
+private:
+  string hostname1;
+  string hostname2;
+  string port;
+
+  double o_percent;
+  int trace_queue_n;
+
+  struct event *timer; // Used to control inter-transmission time.
+  double next_time;    // Inter-transmission time parameters.
+  double last_rx;      // Used to moderate transmission rate.
+  double last_tx;
+
+  enum read_state_enum {
+    INIT_READ,
+    CONN_SETUP,
+    LOADING,
+    IDLE,
+    WAITING_FOR_GET,
+    WAITING_FOR_SET,
+    WAITING_FOR_DELETE,
+    MAX_READ_STATE,
+  };
+
+  enum write_state_enum {
+    INIT_WRITE,
+    ISSUING,
+    WAITING_FOR_TIME,
+    WAITING_FOR_OPQ,
+    MAX_WRITE_STATE,
+  };
+
+  read_state_enum read_state;
+  write_state_enum write_state;
+
+  // Parameters to track progress of the data loader.
+  int loader_issued, loader_completed;
+
+  uint32_t *opaque;
+  int *issue_buf_size;
+  int *issue_buf_n;
+  unsigned char **issue_buf_pos;
+  unsigned char **issue_buf;
+  bool last_quiet1;
+  bool last_quiet2;
+  uint32_t total;
+  uint32_t cid;
+  uint32_t gets;
+  uint32_t gloc;
+  uint32_t ghits;
+  uint32_t sloc;
+  uint32_t esets;
+  uint32_t isets;
+  uint32_t iloc;
+  
+  uint32_t buffer_size_;
+  unsigned char* buffer_write[MAX_LEVELS];
+  unsigned char* buffer_read[MAX_LEVELS];
+  unsigned char* buffer_write_pos[MAX_LEVELS];
+  unsigned char* buffer_read_pos[MAX_LEVELS];
+  unsigned char* buffer_lasthdr[MAX_LEVELS];
+  unsigned char* buffer_leftover[MAX_LEVELS];
+  uint32_t buffer_read_n[MAX_LEVELS];
+  uint32_t buffer_write_n[MAX_LEVELS];
+  uint32_t buffer_read_nbytes[MAX_LEVELS];
+  uint32_t buffer_write_nbytes[MAX_LEVELS];
+
+
+  //std::vector<std::queue<Operation>> op_queue;
+  Operation ***op_queue;
+  uint32_t *op_queue_size;
+  uint32_t *issued_queue;
+
+
+  Generator *valuesize;
+  Generator *keysize;
+  KeyGenerator *keygen;
+  Generator *iagen;
+  pthread_mutex_t* lock;
+  unordered_map<string,vector<Operation*>> *g_wb_keys;
+  queue<Operation*> *trace_queue;
+  queue<Operation*> extra_queue;
+
+  // state machine functions / event processing
+  void pop_op(Operation *op);
+  void output_op(Operation *op, int type, bool was_found);
+  //void finish_op(Operation *op);
+  void finish_op(Operation *op,int was_hit);
+  int issue_getsetorset(double now = 0.0);
+
+  // request functions
+  void issue_sasl();
+  int issue_op(Operation* op);
+  int issue_noop(int level = 1);
+  int issue_touch(const char* key, int valuelen, double now, int level);
+  int issue_delete(const char* key, double now, uint32_t flags);
+  int issue_get_with_len(const char* key, int valuelen, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
+  int issue_get_with_len(Operation *pop, double now, bool quiet, uint32_t flags, Operation *l1 = NULL);
+  int issue_set(const char* key, const char* value, int length, double now, uint32_t flags);
+  int issue_set(Operation *pop, const char* value, double now, uint32_t flags);
+  int offer_set(Operation *pop, int extra = 0);
+  int offer_get(Operation *pop, int extra = 0);
+  int send_write_buffer(int level);
+  size_t fill_read_buffer(int level, int *extra);
+  int add_get_op_to_queue(Operation *pop, int level, int cb = 0);
+  int add_set_to_queue(Operation *pop, int level, const char *value, int cb = 0);
 
   int read_response_l1(); 
   void read_response_l2();

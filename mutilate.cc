@@ -1377,7 +1377,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   if (servers.size() == 1) {
     vector<Connection*> connections;
     vector<Connection*> server_lead;
-    for (auto s: servers) {
+    for (auto s: servers) { 
       // Split args.server_arg[s] into host:port using strtok().
       char *s_copy = new char[s.length() + 1];
       strcpy(s_copy, s.c_str());
@@ -1629,7 +1629,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && ! ( args.approx_given || args.approx_batch_given || args.use_shm_given)) {
+  } else if (servers.size() == 2 && !(args.approx_given || args.approx_batch_given || args.use_shm_given || args.use_shm_batch_given)) {
     vector<ConnectionMulti*> connections;
     vector<ConnectionMulti*> server_lead;
 
@@ -1786,7 +1786,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     event_config_free(config);
     evdns_base_free(evdns, 0);
     event_base_free(base);
-  } else if (servers.size() == 2 && args.approx_given && !args.approx_batch_given && !args.use_shm_given) {
+  } else if (servers.size() == 2 && args.approx_given) {
     vector<ConnectionMultiApprox*> connections;
     vector<ConnectionMultiApprox*> server_lead;
 
@@ -1944,7 +1944,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     evdns_base_free(evdns, 0);
     event_base_free(base);
   
-  } else if (servers.size() == 2 && args.approx_batch_given && !args.use_shm_given) {
+  } else if (servers.size() == 2 && args.approx_batch_given) {
     vector<ConnectionMultiApproxBatch*> connections;
     vector<ConnectionMultiApproxBatch*> server_lead;
 
@@ -2139,8 +2139,8 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     
     // wait for all threads to reach here
     pthread_barrier_wait(&barrier);
-    //fprintf(stderr,"Start = %f\n", start);
     double start = get_time();
+    fprintf(stderr,"Start = %f\n", start);
     double now = start;
     for (ConnectionMultiApproxShm *conn: connections) {
         conn->start_time = now;
@@ -2157,9 +2157,68 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       stats.accumulate(conn->stats);
       delete conn;
     }
-
+    double stop = get_time();
+    fprintf(stderr,"Stop = %f\n", stop);
     stats.start = start;
-    stats.stop = now;
+    stats.stop = stop;
+
+
+  } else if (servers.size() == 2 && args.use_shm_batch_given) {
+    vector<ConnectionMultiApproxBatchShm*> connections;
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+
+      ConnectionMultiApproxBatchShm* conn = new ConnectionMultiApproxBatchShm(options,args.agentmode_given ? false : true);
+      int connected = 0;
+      if (conn && conn->do_connect()) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+    double start = get_time();
+    fprintf(stderr,"Start = %f\n", start);
+    double now = start;
+    for (ConnectionMultiApproxBatchShm *conn: connections) {
+        conn->start_time = now;
+        conn->drive_write_machine_shm(now);
+    }
+
+
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxBatchShm *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+    double stop = get_time();
+    fprintf(stderr,"Stop = %f\n", stop);
+    stats.start = start;
+    stats.stop = stop;
+
 
   }
 }

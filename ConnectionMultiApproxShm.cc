@@ -1251,6 +1251,86 @@ void ConnectionMultiApproxShm::drive_write_machine_shm(double now) {
 }
 
 /**
+ * Request generation loop
+ */
+//void ConnectionMultiApproxShm::drive_write_machine_shm_2(double now) {
+//
+//    while (trace_queue->size() > 0) {
+//        int extra_tries = extra_queue.size();
+//        for (int i = 0; i < extra_tries; i++) {
+//            Operation *Op = extra_queue.front(); 
+//            switch(Op->type)
+//            {
+//                case Operation::GET:
+//                   offer_get(Op,1);
+//                   break;
+//                case Operation::SET:
+//                   offer_set(Op,1);
+//                   break;
+//            }
+//        }
+//
+//        int nissued = 0;
+//        int nissuedl2 = 0;
+//        while (nissued < options.depth && extra_queue.size() == 0) {
+//            Operation *Op = trace_queue->front(); 
+//            
+//            if (Op == NULL || trace_queue->size() <= 0 || Op->type == Operation::SASL) {
+//                eof = 1;
+//                cid_rate.insert( {cid, 100 } );
+//                fprintf(stderr,"cid %d done\n",cid);
+//                string op_queue1;
+//                string op_queue2;
+//                for (int j = 0; j < 2; j++) {
+//                    for (int i = 0; i < OPAQUE_MAX; i++) {
+//                        if (op_queue[j+1][i] != NULL) {
+//                            if (j == 0) {
+//                                op_queue1 = op_queue1 + "," + op_queue[j+1][i]->key;
+//                            } else {
+//                                op_queue2 = op_queue2 + "," + op_queue[j+1][i]->key;
+//                            }
+//                        }
+//                    }
+//                }
+//                fprintf(stderr,"cid %d op_queue1: %s op_queue2: %s, op_queue_size1: %d, op_queue_size2: %d\n",cid,op_queue1.c_str(),op_queue2.c_str(),op_queue_size[1],op_queue_size[2]);
+//                return;
+//            } 
+//            int gtg = 0;
+//            pthread_mutex_lock(lock_out[1]);
+//            switch(Op->type)
+//            {
+//                case Operation::GET:
+//                   gtg = bipbuf_unused(bipbuf_out[1]) > (int)(24+strlen(Op->key)) ? 1 : 0;
+//                   break;
+//                case Operation::SET:
+//                   gtg = bipbuf_unused(bipbuf_out[1]) > (int)(32+Op->valuelen) ? 1 : 0;
+//                   break;
+//            }
+//            pthread_mutex_unlock(lock_out[1]);
+//
+//
+//            if (gtg) {
+//                trace_queue->pop();
+//                int l2issued = issue_op(Op);
+//                nissuedl2 += l2issued;
+//                nissued++;
+//            } else {
+//                break;
+//            }
+//        }
+//
+//        //wait for response (at least nissued)
+//        int l2issued = read_response_l1();
+//        nissuedl2 += l2issued;
+//        if (nissuedl2 > 0) {
+//            read_response_l2();
+//        }
+//        
+//    }
+//
+//}
+
+/**
  * Tries to consume a binary response (in its entirety) from shared memory.
  *
  * @param input evBuffer to read response from
@@ -1287,7 +1367,7 @@ static int handle_response(ConnectionMultiApproxShm *conn, unsigned char *input,
   while ((abuf = bipbuf_poll(conn->bipbuf_in[level],targetLen)) == NULL) {
       pthread_mutex_unlock(conn->lock_in[level]);
       tries++;
-      if (tries > 100) {
+      if (tries > 10) {
           //fprintf(stderr,"more than 10000 tries for cid: %d for length %d\n",conn->get_cid(),targetLen);
           return 0;
 
@@ -1348,7 +1428,7 @@ static int handle_response(ConnectionMultiApproxShm *conn, unsigned char *input,
     evict->evictedData = (char*)malloc(evict->evictedLen);
     memcpy(evict->evictedData,buf,evict->evictedLen);
     evict->evicted = true;
-    fprintf(stderr,"class: %u, serverFlags: %u, evictedFlags: %u\n",evict->clsid,evict->serverFlags,evict->evictedFlags);
+    //fprintf(stderr,"class: %u, serverFlags: %u, evictedFlags: %u\n",evict->clsid,evict->serverFlags,evict->evictedFlags);
   } else if ( (opcode == CMD_TOUCH && status == RESP_NOT_FOUND) || 
               (opcode == CMD_DELETE && status == RESP_NOT_FOUND) ) {
     found = false;
@@ -1521,16 +1601,6 @@ int ConnectionMultiApproxShm::read_response_l1() {
     }
     pthread_mutex_lock(lock_in[1]);
     unsigned char *in = bipbuf_peek(bipbuf_in[1],24);
-    //int tries = 0;
-    //while (input == NULL) {
-    //    tries++;
-    //    if (tries > 1000) {
-    //        fprintf(stderr,"more than 1000 tries for header cid: %d\n",cid);
-    //        break;
-    //    }
-    //    in = bipbuf_poll(bipbuf_in[1],24);
-    //    
-    //}
     if (in) {
         memcpy(input,in,24);
         pthread_mutex_unlock(lock_in[1]);
@@ -1689,16 +1759,6 @@ void ConnectionMultiApproxShm::read_response_l2() {
 
     pthread_mutex_lock(lock_in[2]);
     unsigned char *in = bipbuf_peek(bipbuf_in[2],24);
-    //int tries = 0;
-    //while (in == NULL) {
-    //    tries++;
-    //    if (tries > 2000) {
-    //        fprintf(stderr,"more than 2000 tries for header cid: %d\n",cid);
-    //        break;
-    //    }
-    //    in = bipbuf_poll(bipbuf_in[2],24);
-    //    
-    //}
     if (in) {
         memcpy(input,in,24);
         pthread_mutex_unlock(lock_in[2]);
