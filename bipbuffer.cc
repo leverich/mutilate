@@ -69,8 +69,10 @@ int bipbuf_is_empty(const bipbuf_t* me)
  * ie. is the distance from A to buffer's end less than B to A? */
 static void __check_for_switch_to_b(bipbuf_t* me)
 {
-    if (me->size - me->a_end < me->a_start - me->b_end)
+    if (me->size - me->a_end < me->a_start - me->b_end) {
+        //fprintf(stderr,"%p switching to b, a_start: %d, a_end: %d, b_end %d\n",me,me->a_start,me->a_end,me->b_end);
         me->b_inuse = 1;
+    }
 }
 
 /* TODO: DOCUMENT THESE TWO FUNCTIONS */

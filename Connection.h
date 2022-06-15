@@ -733,8 +733,10 @@ public:
   bipbuf_t* bipbuf_out[3];
   pthread_mutex_t* lock_in[3];
   pthread_mutex_t* lock_out[3];
-  pthread_cond_t* cond_in[3];
-  pthread_cond_t* cond_out[3];
+  pthread_cond_t* cond_in_not_empty[3];
+  pthread_cond_t* cond_in_not_full[3];
+  pthread_cond_t* cond_out_not_empty[3];
+  pthread_cond_t* cond_out_not_full[3];
 
 private:
   string hostname1;
@@ -885,8 +887,13 @@ public:
   bipbuf_t* bipbuf_out[3];
   pthread_mutex_t* lock_in[3];
   pthread_mutex_t* lock_out[3];
-  pthread_cond_t* cond_in[3];
-  pthread_cond_t* cond_out[3];
+ 
+  int *bipbuf_out_bytes[3];
+  int *bipbuf_in_bytes[3];
+  pthread_cond_t* cond_in_not_empty[3];
+  pthread_cond_t* cond_in_not_full[3];
+  pthread_cond_t* cond_out_not_empty[3];
+  pthread_cond_t* cond_out_not_full[3];
 
 private:
   string hostname1;

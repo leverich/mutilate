@@ -3,6 +3,7 @@
 
 #define BIPBUFSIZE 4*1024*1024
 #include "binary_protocol.h"
+#include <stdio.h>
 
 extern "C" {
     typedef struct
