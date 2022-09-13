@@ -2,16 +2,23 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sched.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <netinet/tcp.h>
+#include <fcntl.h> /* Added for the nonblocking socket */
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <queue>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <filesystem>
+namespace fs = std::filesystem;
 
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
@@ -19,6 +26,10 @@
 #include <event2/event.h>
 #include <event2/thread.h>
 #include <event2/util.h>
+
+
+#include "common.h" //for zstd
+#include "zstd.h" //shippped with mutilate
 
 #include "config.h"
 
@@ -37,13 +48,43 @@
 #include "log.h"
 #include "mutilate.h"
 #include "util.h"
+#include "blockingconcurrentqueue.h"
+//#include <folly/concurrency/UnboundedQueue.h>
+//#include <folly/concurrency/ConcurrentHashMap.h>
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
+#define hashsize(n) ((unsigned long int)1<<(n))
 
 using namespace std;
+using namespace moodycamel;
+//using namespace folly;
+
+int max_n[3] = {0,0,0};
+ifstream kvfile;
+pthread_mutex_t flock = PTHREAD_MUTEX_INITIALIZER;
+
+pthread_mutex_t reader_l;
+pthread_cond_t reader_ready;
+int reader_not_ready = 1;
+
+pthread_mutex_t *item_locks;
+int item_lock_hashpower = 14;
+        
+map<string,int> g_key_hist;
+
+//USPMCQueue<Operation*,true,8,7> g_trace_queue;
+
+//ConcurrentHashMap<int, double> cid_rate;
+unordered_map<int,double> cid_rate;
+//ConcurrentHashMap<string, vector<Operation*>> copy_keys;
+unordered_map<string, vector<Operation*>> copy_keys;
+unordered_map<string, vector<Operation*>> wb_keys;
+//ConcurrentHashMap<string, vector<Operation*>> touch_keys;
+unordered_map<string, int> touch_keys;
+//ConcurrentHashMap<string, vector<Operation*>> wb_keys;
 
 gengetopt_args_info args;
-char random_char[2 * 1024 * 1024];  // Buffer used to generate random values.
+char random_char[4 * 1024 * 1024];  // Buffer used to generate random values.
 
 #ifdef HAVE_LIBZMQ
 vector<zmq::socket_t*> agent_sockets;
@@ -55,11 +96,27 @@ struct thread_data {
   options_t *options;
   bool master;  // Thread #0, not to be confused with agent master.
 #ifdef HAVE_LIBZMQ
-  zmq::socket_t *socket;
+  zmq::socket_t *socketz;
 #endif
+  int id;
+  //std::vector<ConcurrentQueue<string>*> trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue;
+  //std::vector<pthread_mutex_t*> *mutexes;
+  pthread_mutex_t* g_lock;
+  std::unordered_map<string,vector<Operation*>> *g_wb_keys;
+};
+
+struct reader_data {
+  //std::vector<ConcurrentQueue<string>*> trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue;
+  std::vector<pthread_mutex_t*> *mutexes;
+  string *trace_filename;
+  int twitter_trace;
 };
 
 // struct evdns_base *evdns;
+    
+pthread_t pt[1024];
 
 pthread_barrier_t barrier;
 
@@ -70,33 +127,36 @@ void init_random_stuff();
 void go(const vector<string> &servers, options_t &options,
         ConnectionStats &stats
 #ifdef HAVE_LIBZMQ
-, zmq::socket_t* socket = NULL
+, zmq::socket_t* socketz = NULL
 #endif
 );
 
+//void do_mutilate(const vector<string> &servers, options_t &options,
+//                 ConnectionStats &stats,std::vector<ConcurrentQueue<string>*> trace_queue,  bool master = true
 void do_mutilate(const vector<string> &servers, options_t &options,
-                 ConnectionStats &stats, bool master = true
+                 ConnectionStats &stats,std::vector<queue<Operation*>*> *trace_queue, pthread_mutex_t *g_lock, unordered_map<string,vector<Operation*>> *g_wb_keys,  bool master = true
 #ifdef HAVE_LIBZMQ
-, zmq::socket_t* socket = NULL
+, zmq::socket_t* socketz = NULL
 #endif
 );
 void args_to_options(options_t* options);
 void* thread_main(void *arg);
+void* reader_thread(void *arg);
 
 #ifdef HAVE_LIBZMQ
-static std::string s_recv (zmq::socket_t &socket) {
+static std::string s_recv (zmq::socket_t &socketz) {
   zmq::message_t message;
-  socket.recv(&message);
+  socketz.recv(&message);
 
   return std::string(static_cast<char*>(message.data()), message.size());
 }
 
 //  Convert string to 0MQ string and send to socket
-static bool s_send (zmq::socket_t &socket, const std::string &string) {
+static bool s_send (zmq::socket_t &socketz, const std::string &string) {
   zmq::message_t message(string.size());
   memcpy(message.data(), string.data(), string.size());
 
-  return socket.send(message);
+  return socketz.send(message);
 }
 
 /*
@@ -156,17 +216,21 @@ static bool s_send (zmq::socket_t &socket, const std::string &string) {
 void agent() {
   zmq::context_t context(1);
 
-  zmq::socket_t socket(context, ZMQ_REP);
-  socket.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  zmq::socket_t socketz(context, ZMQ_REP);
+  if (atoi(args.agent_port_arg) == -1) {
+    socketz.bind(string("ipc:///tmp/memcached.sock").c_str());
+  } else {
+    socketz.bind((string("tcp://*:")+string(args.agent_port_arg)).c_str());
+  }
 
   while (true) {
     zmq::message_t request;
 
-    socket.recv(&request);
+    socketz.recv(&request);
 
     zmq::message_t num(sizeof(int));
     *((int *) num.data()) = args.threads_arg * args.lambda_mul_arg;
-    socket.send(num);
+    socketz.send(num);
 
     options_t options;
     memcpy(&options, request.data(), sizeof(options));
@@ -174,8 +238,8 @@ void agent() {
     vector<string> servers;
 
     for (int i = 0; i < options.server_given; i++) {
-      servers.push_back(s_recv(socket));
-      s_send(socket, "ACK");
+      servers.push_back(s_recv(socketz));
+      s_send(socketz, "ACK");
     }
 
     for (auto i: servers) {
@@ -184,9 +248,9 @@ void agent() {
 
     options.threads = args.threads_arg;
 
-    socket.recv(&request);
+    socketz.recv(&request);
     options.lambda_denom = *((int *) request.data());
-    s_send(socket, "THANKS");
+    s_send(socketz, "THANKS");
 
     //    V("AGENT SLEEPS"); sleep(1);
     options.lambda = (double) options.qps / options.lambda_denom * args.lambda_mul_arg;
@@ -199,7 +263,7 @@ void agent() {
 
     ConnectionStats stats;
 
-    go(servers, options, stats, &socket);
+    go(servers, options, stats, &socketz);
 
     AgentStats as;
 
@@ -212,11 +276,11 @@ void agent() {
     as.stop = stats.stop;
     as.skips = stats.skips;
 
-    string req = s_recv(socket);
+    string req = s_recv(socketz);
     //    V("req = %s", req.c_str());
     request.rebuild(sizeof(as));
     memcpy(request.data(), &as, sizeof(as));
-    socket.send(request);
+    socketz.send(request);
   }
 }
 
@@ -319,7 +383,7 @@ void finish_agent(ConnectionStats &stats) {
  * skew.
  */
 
-void sync_agent(zmq::socket_t* socket) {
+void sync_agent(zmq::socket_t* socketz) {
   //  V("agent: synchronizing");
 
   if (args.agent_given) {
@@ -338,16 +402,16 @@ void sync_agent(zmq::socket_t* socket) {
       if (s_recv(*s).compare(string("ack")))
         DIE("sync_agent[M]: out of sync [2]");
   } else if (args.agentmode_given) {
-    if (s_recv(*socket).compare(string("sync_req")))
+    if (s_recv(*socketz).compare(string("sync_req")))
       DIE("sync_agent[A]: out of sync [1]");
 
     /* The real sync */
-    s_send(*socket, "sync");
-    if (s_recv(*socket).compare(string("proceed")))
+    s_send(*socketz, "sync");
+    if (s_recv(*socketz).compare(string("proceed")))
       DIE("sync_agent[A]: out of sync [2]");
     /* End sync */
 
-    s_send(*socket, "ack");
+    s_send(*socketz, "ack");
   }
 
   //  V("agent: synchronized");
@@ -413,6 +477,7 @@ string name_to_ipaddr(string host) {
 }
 
 int main(int argc, char **argv) {
+  //event_enable_debug_mode();
   if (cmdline_parser(argc, argv, &args) != 0) exit(-1);
 
   for (unsigned int i = 0; i < args.verbose_given; i++)
@@ -445,7 +510,7 @@ int main(int argc, char **argv) {
   //  struct event_base *base;
 
   //  if ((base = event_base_new()) == NULL) DIE("event_base_new() fail");
-  //  evthread_use_pthreads();
+  //evthread_use_pthreads();
 
   //  if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
 
@@ -470,8 +535,14 @@ int main(int argc, char **argv) {
   pthread_barrier_init(&barrier, NULL, options.threads);
 
   vector<string> servers;
-  for (unsigned int s = 0; s < args.server_given; s++)
-    servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+  for (unsigned int s = 0; s < args.server_given; s++) {
+    if (options.unix_socket || args.use_shm_given) {
+        servers.push_back(string(args.server_arg[s]));
+    } else {
+        servers.push_back(name_to_ipaddr(string(args.server_arg[s])));
+    }
+  }
+  
 
   ConnectionStats stats;
 
@@ -583,23 +654,61 @@ int main(int argc, char **argv) {
 
   if (!args.scan_given && !args.loadonly_given) {
     stats.print_header();
-    stats.print_stats("read",   stats.get_sampler);
-    stats.print_stats("update", stats.set_sampler);
-    stats.print_stats("op_q",   stats.op_sampler);
+    stats.print_stats("read     ",   stats.get_sampler);
+    stats.print_stats("read_l1  ",   stats.get_l1_sampler);
+    stats.print_stats("read_l2  ",   stats.get_l2_sampler);
+    stats.print_stats("update_l1", stats.set_l1_sampler);
+    stats.print_stats("update_l2", stats.set_l2_sampler);
+    stats.print_stats("op_q     ",   stats.op_sampler);
 
-    int total = stats.gets + stats.sets;
+    int total = stats.gets_l1 + stats.gets_l2 + stats.sets_l1 + stats.sets_l2;
 
     printf("\nTotal QPS = %.1f (%d / %.1fs)\n",
            total / (stats.stop - stats.start),
            total, stats.stop - stats.start);
+    
+    int rtotal = stats.gets +  stats.sets;
+    printf("\nTotal RPS = %.1f (%d / %.1fs)\n",
+           rtotal / (stats.stop - stats.start),
+           rtotal, stats.stop - stats.start);
 
     if (args.search_given && peak_qps > 0.0)
       printf("Peak QPS  = %.1f\n", peak_qps);
 
     printf("\n");
 
-    printf("Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
-           (double) stats.get_misses/stats.gets*100);
+    printf("GET Misses = %" PRIu64 " (%.1f%%)\n", stats.get_misses,
+           (double) stats.get_misses/(stats.gets)*100);
+    if (servers.size() == 2) {
+        int64_t additional = 0;
+        if (stats.delete_misses_l2 > 0) {
+            additional = stats.delete_misses_l2 - stats.set_excl_hits_l1;
+            fprintf(stderr,"delete misses_l2 %lu, delete hits_l2 %lu, excl_set_l1_hits: %lu\n",stats.delete_misses_l2,stats.delete_hits_l2,stats.set_excl_hits_l1);
+            if (additional < 0) {
+                fprintf(stderr,"additional misses is neg! %ld\n",additional);
+                additional = 0;
+            }
+        }
+
+        for (int i = 0; i < 40; i++) {
+            fprintf(stderr,"class %d, gets: %lu, sets: %lu\n",i,stats.gets_cid[i],stats.sets_cid[i]);
+        }
+        //printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 + stats.set_misses_l1,
+        //       (double) (stats.get_misses_l1 + stats.set_misses_l1) /(stats.gets + stats.sets)*100);
+        printf("Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l1 ,
+               (double) (stats.get_misses_l1) /(stats.gets)*100);
+        printf("SET Misses (L1) = %" PRIu64 " (%.1f%%)\n", stats.set_misses_l1 ,
+               (double) (stats.set_misses_l1) /(stats.sets)*100);
+        //printf("Misses (L2) = %" PRIu64 " (%.1f%%)\n", stats.get_misses_l2,
+        //       (double) (stats.get_misses_l2) /(stats.gets)*100);
+        printf("L2 Writes = %" PRIu64 " (%.1f%%)\n", stats.sets_l2,
+               (double) stats.sets_l2/(stats.gets+stats.sets)*100);
+        
+        printf("Incl WBs  = %" PRIu64 " (%.1f%%)\n", stats.incl_wbs,
+               (double) stats.incl_wbs/(stats.gets+stats.sets)*100);
+        printf("Excl WBs  = %" PRIu64 " (%.1f%%)\n", stats.excl_wbs,
+               (double) stats.excl_wbs/(stats.gets+stats.sets)*100);
+    }
 
     printf("Skipped TXs = %" PRIu64 " (%.1f%%)\n\n", stats.skips,
            (double) stats.skips / total * 100);
@@ -642,7 +751,7 @@ int main(int argc, char **argv) {
 void go(const vector<string>& servers, options_t& options,
         ConnectionStats &stats
 #ifdef HAVE_LIBZMQ
-, zmq::socket_t* socket
+, zmq::socket_t* socketz
 #endif
 ) {
 #ifdef HAVE_LIBZMQ
@@ -651,8 +760,53 @@ void go(const vector<string>& servers, options_t& options,
   }
 #endif
 
+  //std::vector<ConcurrentQueue<string>*> trace_queue; // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
+  std::vector<queue<Operation*>*> *trace_queue = new std::vector<queue<Operation*>*>(); 
+  // = (ConcurrentQueue<string>**)malloc(sizeof(ConcurrentQueue<string>)
+  //std::vector<pthread_mutex_t*> *mutexes = new std::vector<pthread_mutex_t*>(); 
+  pthread_mutex_t *g_lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t)); 
+  *g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+  unordered_map<string,vector<Operation*>> *g_wb_keys = new unordered_map<string,vector<Operation*>>();
+
+  for (int i = 0; i <= options.apps; i++) {
+  //    //trace_queue.push_back(new ConcurrentQueue<string>(2000000));
+  //    pthread_mutex_t *lock = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+  //    *lock = PTHREAD_MUTEX_INITIALIZER;
+  //    mutexes->push_back(lock);
+      trace_queue->push_back(new std::queue<Operation*>());
+  }
+  pthread_mutex_init(&reader_l, NULL);
+  pthread_cond_init(&reader_ready, NULL);
+
+  //ConcurrentQueue<string> *trace_queue = new ConcurrentQueue<string>(20000000);
+  struct reader_data *rdata = (struct reader_data*)malloc(sizeof(struct reader_data));
+  rdata->trace_queue = trace_queue;
+  //rdata->mutexes = mutexes;
+  rdata->twitter_trace = options.twitter_trace;
+  pthread_t rtid;
+  if (options.read_file) {
+      rdata->trace_filename = new string(options.file_name); 
+      int error = 0;
+      if ((error = pthread_create(&rtid, NULL,reader_thread,rdata)) != 0) {
+        printf("reader thread failed to be created with error code %d\n", error);
+      }
+      pthread_mutex_lock(&reader_l);
+      while (reader_not_ready) 
+        pthread_cond_wait(&reader_ready,&reader_l);
+      pthread_mutex_unlock(&reader_l);
+      
+  }
+
+  /* initialize item locks */
+  uint32_t item_lock_count = hashsize(item_lock_hashpower);
+  item_locks = (pthread_mutex_t*)calloc(item_lock_count, sizeof(pthread_mutex_t));
+  for (size_t i = 0; i < item_lock_count; i++) {
+      pthread_mutex_init(&item_locks[i], NULL);
+  }
+
+
   if (options.threads > 1) {
-    pthread_t pt[options.threads];
     struct thread_data td[options.threads];
 #ifdef __clang__
     vector<string>* ts = static_cast<vector<string>*>(alloca(sizeof(vector<string>) * options.threads));
@@ -664,10 +818,15 @@ void go(const vector<string>& servers, options_t& options,
     int current_cpu = -1;
 #endif
 
+
     for (int t = 0; t < options.threads; t++) {
       td[t].options = &options;
+      td[t].id = t;
+      td[t].trace_queue = trace_queue;
+      td[t].g_lock = g_lock;
+      td[t].g_wb_keys = g_wb_keys;
 #ifdef HAVE_LIBZMQ
-      td[t].socket = socket;
+      td[t].socketz = socketz;
 #endif
       if (t == 0) td[t].master = true;
       else td[t].master = false;
@@ -711,24 +870,31 @@ void go(const vector<string>& servers, options_t& options,
 
       if (pthread_create(&pt[t], &attr, thread_main, &td[t]))
         DIE("pthread_create() failed");
+      usleep(t);
     }
 
     for (int t = 0; t < options.threads; t++) {
       ConnectionStats *cs;
       if (pthread_join(pt[t], (void**) &cs)) DIE("pthread_join() failed");
       stats.accumulate(*cs);
+      
       delete cs;
     }
+  for (int i = 1; i <= 2; i++) {
+      fprintf(stderr,"max issue buf n[%d]: %u\n",i,max_n[i]);
+  }
+    //delete trace_queue;
+
   } else if (options.threads == 1) {
-    do_mutilate(servers, options, stats, true
+    do_mutilate(servers, options, stats, trace_queue, g_lock, g_wb_keys, true
 #ifdef HAVE_LIBZMQ
-, socket
+, socketz
 #endif
 );
   } else {
 #ifdef HAVE_LIBZMQ
     if (args.agent_given) {
-      sync_agent(socket);
+      sync_agent(socketz);
     }
 #endif
   }
@@ -746,14 +912,427 @@ void go(const vector<string>& servers, options_t& options,
 #endif
 }
 
+int stick_this_thread_to_core(int core_id) {
+   int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+   if (core_id < 0 || core_id >= num_cores)
+      return EINVAL;
+
+   cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+   CPU_SET(core_id, &cpuset);
+
+   pthread_t current_thread = pthread_self();    
+   return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+}
+
+bool hasEnding (string const &fullString, string const &ending) {
+    if (fullString.length() >= ending.length()) {
+        return (0 == fullString.compare (fullString.length() - ending.length(), ending.length(), ending));
+    } else {
+        return false;
+    }
+}
+
+static char *get_stream(ZSTD_DCtx* dctx, FILE *fin, size_t const buffInSize, void* const buffIn, size_t const buffOutSize, void* const buffOut) {
+    /* This loop assumes that the input file is one or more concatenated zstd
+     * streams. This example won't work if there is trailing non-zstd data at
+     * the end, but streaming decompression in general handles this case.
+     * ZSTD_decompressStream() returns 0 exactly when the frame is completed,
+     * and doesn't consume input after the frame.
+     */
+    size_t const toRead = buffInSize;
+    size_t read;
+    size_t lastRet = 0;
+    int isEmpty = 1;
+    if ( (read = fread_orDie(buffIn, toRead, fin)) ) {
+        isEmpty = 0;
+        ZSTD_inBuffer input = { buffIn, read, 0 };
+        /* Given a valid frame, zstd won't consume the last byte of the frame
+         * until it has flushed all of the decompressed data of the frame.
+         * Therefore, instead of checking if the return code is 0, we can
+         * decompress just check if input.pos < input.size.
+         */
+        char *trace = (char*)malloc(buffOutSize*2);
+        memset(trace,0,buffOutSize+1);
+        size_t tracelen = buffOutSize+1;
+        size_t total = 0;
+        while (input.pos < input.size) {
+            ZSTD_outBuffer output = { buffOut, buffOutSize, 0 };
+            /* The return code is zero if the frame is complete, but there may
+             * be multiple frames concatenated together. Zstd will automatically
+             * reset the context when a frame is complete. Still, calling
+             * ZSTD_DCtx_reset() can be useful to reset the context to a clean
+             * state, for instance if the last decompression call returned an
+             * error.
+             */
+            
+            size_t const ret = ZSTD_decompressStream(dctx, &output , &input);
+            
+            if (output.pos + total > tracelen) {
+                trace = (char*)realloc(trace,(output.pos+total+1));
+                tracelen = (output.pos+total+1);
+            }
+            strncat(trace,(const char*)buffOut,output.pos); 
+            total += output.pos;
+
+            lastRet = ret;
+        }
+        int idx = total;
+        while (trace[idx] != '\n') {
+            idx--;
+        }
+        trace[idx] = 0;
+        trace[idx+1] = 0;
+        return trace;
+
+    }
+
+    if (isEmpty) {
+        fprintf(stderr, "input is empty\n");
+        return NULL;
+    }
+
+    if (lastRet != 0) {
+        /* The last return value from ZSTD_decompressStream did not end on a
+         * frame, but we reached the end of the file! We assume this is an
+         * error, and the input was truncated.
+         */
+        fprintf(stderr, "EOF before end of stream: %zu\n", lastRet);
+        exit(1);
+    }
+    return NULL;
+
+}
+
+void* reader_thread(void *arg) {
+  struct reader_data *rdata = (struct reader_data *) arg;
+  //std::vector<ConcurrentQueue<string>*> trace_queue = (std::vector<ConcurrentQueue<string>*>) rdata->trace_queue;
+  std::vector<queue<Operation*>*> *trace_queue = (std::vector<queue<Operation*>*>*) rdata->trace_queue;
+  //  std::vector<pthread_mutex_t*> *mutexes = (std::vector<pthread_mutex_t*>*) rdata->mutexes;
+  int twitter_trace = rdata->twitter_trace;
+  string fn = *(rdata->trace_filename);
+  srand(time(NULL));
+  if (hasEnding(fn,".zst")) {
+        string blobfile = fs::path( fn ).filename();
+        blobfile.erase(blobfile.length()-4);
+        blobfile.insert(0,"/dev/shm/");
+        blobfile.append(".data");
+        int do_blob = 0;
+        int blob = 0;
+        if (do_blob) {
+            blob = open(blobfile.c_str(),O_CREAT | O_APPEND | O_RDWR, S_IRWXU);
+        }
+        //init
+        const char *filename = fn.c_str();
+        FILE* const fin  = fopen_orDie(filename, "rb");
+        size_t const buffInSize = ZSTD_DStreamInSize()*1000;
+        void*  const buffIn  = malloc_orDie(buffInSize);
+        size_t const buffOutSize = ZSTD_DStreamOutSize()*1000;
+        void*  const buffOut = malloc_orDie(buffOutSize);
+
+        map<string,Operation*> key_hist;
+        ZSTD_DCtx* const dctx = ZSTD_createDCtx();
+        //CHECK(dctx != NULL, "ZSTD_createDCtx() failed!");
+        //char *leftover = malloc(buffOutSize);
+        //memset(leftover,0,buffOutSize);
+		//char *trace = (char*)decompress(filename);
+        uint64_t nwrites = 0;
+        uint64_t nout = 1;
+        int batch = 0;
+        int cappid = 1;
+        fprintf(stderr,"%lu trace queues for connections\n",trace_queue->size());
+        char *trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
+        while (trace != NULL) {
+            char *ftrace = trace;
+            char *line = NULL;
+            char *line_p = (char*)calloc(2048,sizeof(char));
+            while ((line = strsep(&trace,"\n"))) {
+                strncpy(line_p,line,2048);
+                string full_line(line);
+                //check the appid
+                int appid = 0;
+                int first = 1;
+                if (full_line.length() > 10) {
+                    
+                    if (trace_queue->size() > 0) {
+                        stringstream ss(full_line);
+                        string rT;
+                        string rApp;
+                        string rKey;
+                        string rOp;
+                        string rvaluelen;
+                        Operation *Op = new Operation;
+                        if (twitter_trace == 1) {
+                            string rKeySize;
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 6) {
+                                getline( ss, rT, ',' );
+                                getline( ss, rKey, ',' );
+                                getline( ss, rKeySize, ',' );
+                                getline( ss, rvaluelen, ',' );
+                                getline( ss, rApp, ',' );
+                                getline( ss, rOp, ',' );
+                                if (rOp.compare("get") == 0) {
+                                    Op->type = Operation::GET;
+                                } else if (rOp.compare("set") == 0) {
+                                    Op->type = Operation::SET;
+                                }
+                                if (rvaluelen.compare("") == 0 || rvaluelen.size() < 1 || rvaluelen.empty()) {
+                                    continue;
+                                }
+                                appid = cappid;
+                                if (nout % 1000 == 0) {
+                                    cappid++;
+                                    cappid = cappid % trace_queue->size();
+                                    if (cappid == 0) cappid = 1;
+                                }
+                                //appid = stoi(rApp) % trace_queue->size();
+                                if (appid == 0) appid = 1;
+                                //appid = (rand() % (trace_queue->size()-1)) + 1;
+                                //if (appid == 0) appid = 1;
+                                
+                                
+                            } else {
+                                continue;
+                            }
+                            
+                        } 
+                        else if (twitter_trace == 2) {
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 4) {
+                                getline( ss, rT, ',');
+                                getline( ss, rApp, ',');
+                                getline( ss, rOp, ',' );
+                                getline( ss, rKey, ',' );
+                                getline( ss, rvaluelen, ',' );
+                                int ot = stoi(rOp);
+                                switch (ot) {
+                                    case 1:
+                                        Op->type = Operation::GET;
+                                        break;
+                                    case 2:
+                                        Op->type = Operation::SET;
+                                        break;
+                                }
+                                appid = (stoi(rApp)) % trace_queue->size();
+                                if (appid == 0) appid = 1;
+                                //appid = (nout) % trace_queue->size();
+                            } else {
+                                continue;
+                            }
+                        } 
+                        else if (twitter_trace == 3) {
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 4) {
+                                getline( ss, rT, ',');
+                                getline( ss, rApp, ',');
+                                getline( ss, rOp, ',' );
+                                getline( ss, rKey, ',' );
+                                getline( ss, rvaluelen, ',' );
+                                int ot = stoi(rOp);
+                                switch (ot) {
+                                    case 1:
+                                        Op->type = Operation::GET;
+                                        break;
+                                    case 2:
+                                        Op->type = Operation::SET;
+                                        break;
+                                }
+                                //if (first) {
+                                //    appid = (rand() % (trace_queue->size()-1)) + 1;
+                                //    if (appid == 0) appid = 1;
+                                //    first = 0;
+                                //}
+                                //batch++;
+                                appid = (rand() % (trace_queue->size()-1)) + 1;
+                                if (appid == 0) appid = 1;
+                            } else {
+                                continue;
+                            }
+                        } 
+                        else if (twitter_trace == 4) {
+                            size_t n = std::count(full_line.begin(), full_line.end(), ',');
+                            if (n == 4) {
+                                getline( ss, rT, ',');
+                                getline( ss, rKey, ',' );
+                                getline( ss, rOp, ',' );
+                                getline( ss, rvaluelen, ',' );
+                                int ot = stoi(rOp);
+                                switch (ot) {
+                                    case 1:
+                                        Op->type = Operation::GET;
+                                        break;
+                                    case 2:
+                                        Op->type = Operation::SET;
+                                        break;
+                                }
+                                if (rvaluelen == "0") {
+                                    rvaluelen = "50000";
+                                }
+
+                                appid = (rand() % (trace_queue->size()-1)) + 1;
+                                if (appid == 0) appid = 1;
+                            } else {
+                                continue;
+                            }
+                        } 
+                        int vl = stoi(rvaluelen);
+                        if (appid < (int)trace_queue->size() && vl < 524000 && vl > 1) {
+                            Op->valuelen = vl;
+                            strncpy(Op->key,rKey.c_str(),255);;
+                            if (Op->type == Operation::GET) {
+                                //find when was last read
+                                Operation *last_op = key_hist[rKey];
+                                if (last_op != NULL) {
+                                    last_op->future = 1; //THE FUTURE IS NOW
+                                    Op->curr = 1;
+                                    Op->future = 0;
+                                    key_hist[rKey] = Op;
+                                    g_key_hist[rKey] = 1;
+                                } else {
+                                    //first ref
+                                    Op->curr = 1;
+                                    Op->future = 0;
+                                    key_hist[rKey] = Op;
+                                    g_key_hist[rKey] = 0;
+                                }
+                            }
+                            Op->appid = appid;
+                            trace_queue->at(appid)->push(Op);
+                            //g_trace_queue.enqueue(Op);
+                            //if (twitter_trace == 3) { // && batch == 2) {
+                            //    appid = (rand() % (trace_queue->size()-1)) + 1;
+                            //    if (appid == 0) appid = 1;
+                            //    batch = 0;
+                            //}
+                        }
+                    } else {
+                        fprintf(stderr,"big error!\n");
+                    }
+                }
+                //bool res = trace_queue[appid]->try_enqueue(full_line);
+                //while (!res) {
+                //    //usleep(10);
+                //    //res = trace_queue[appid]->try_enqueue(full_line);
+                //    nwrites++;
+                //}
+                nout++;
+                if (nout % 1000000 == 0) fprintf(stderr,"decompressed requests: %lu, waits: %lu\n",nout,nwrites);
+
+            }
+            free(line_p);
+            free(ftrace);
+            trace = get_stream(dctx, fin, buffInSize, buffIn, buffOutSize, buffOut);
+        }
+
+  	for (int i = 0; i < 10; i++) {
+            for (int j = 0; j < (int)trace_queue->size(); j++) {
+  	        //trace_queue[j]->enqueue(eof);
+                Operation *eof = new Operation;
+                eof->type = Operation::SASL;
+                eof->appid = j;
+  	            trace_queue->at(j)->push(eof);
+                //g_trace_queue.enqueue(eof);
+                if (i == 0) {
+                    fprintf(stderr,"appid %d, tq size: %ld\n",j,trace_queue->at(j)->size());
+                }
+            }
+  	}
+        if (do_blob) {
+            for (int i = 0; i < (int)trace_queue->size(); i++) {
+                queue<Operation*> tmp = *(trace_queue->at(i));
+                while (!tmp.empty()) {
+                    Operation *Op = tmp.front();
+                    int br = write(blob,(void*)(Op),sizeof(Operation));
+                    if (br != sizeof(Operation)) {
+                        fprintf(stderr,"error writing op!\n");
+                    }
+                    tmp.pop();
+                }
+
+            }
+        }
+
+        pthread_mutex_lock(&reader_l);
+        if (reader_not_ready) {
+            reader_not_ready = 0;
+        }
+        pthread_mutex_unlock(&reader_l);
+        pthread_cond_signal(&reader_ready);
+        if (trace) {
+            free(trace);
+        }
+        ZSTD_freeDCtx(dctx);
+        fclose_orDie(fin);
+        free(buffIn);
+        free(buffOut);
+
+	
+  } else if (hasEnding(fn,".data")) {
+     ifstream trace_file (fn, ios::in | ios::binary);
+    uint32_t treqs = 0;
+     char *ops = (char*)malloc(sizeof(Operation)*1000000);
+     Operation *optr = (Operation*)(ops);
+     while (trace_file.good()) {
+        trace_file.read((char*)ops,sizeof(Operation)*1000000);
+        int tbytes = trace_file.gcount();
+        int tops = tbytes/sizeof(Operation);
+        for (int i = 0; i < tops; i++) {
+            Operation *op = (Operation*)optr;
+            string rKey = string(op->key);
+            g_key_hist[rKey] = 0;
+            if (op->future) {
+                g_key_hist[rKey] = 1;
+            }
+            trace_queue->at(op->appid)->push(op);
+            treqs++;
+            if (treqs % 1000000 == 0) fprintf(stderr,"loaded requests: %u\n",treqs);
+            optr++;
+
+        }
+        optr = (Operation*)ops;
+     }
+     trace_file.close();
+     
+     pthread_mutex_lock(&reader_l);
+     if (reader_not_ready) {
+         reader_not_ready = 0;
+     }
+     pthread_mutex_unlock(&reader_l);
+     pthread_cond_signal(&reader_ready);
+
+  }
+      //else {
+ 
+  	//ifstream trace_file;
+  	//trace_file.open(rdata->trace_filename);
+  	//while (trace_file.good()) {
+  	//  string line;
+  	//  getline(trace_file,line);
+  	//  trace_queue->enqueue(line);
+  	//}
+  	//string eof = "EOF";
+  	//for (int i = 0; i < 1000; i++) {
+  	//  trace_queue->enqueue(eof);
+  	//}
+  //}
+
+  return NULL;
+}
+
 void* thread_main(void *arg) {
   struct thread_data *td = (struct thread_data *) arg;
-
+  int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  //int res = stick_this_thread_to_core(td->id % num_cores);
+  //if (res != 0) {
+  //      DIE("pthread_attr_setaffinity_np(%d) failed: %s",
+  //                td->id, strerror(res));
+  //}
   ConnectionStats *cs = new ConnectionStats();
 
-  do_mutilate(*td->servers, *td->options, *cs, td->master
+  do_mutilate(*td->servers, *td->options, *cs,  td->trace_queue, td->g_lock, td->g_wb_keys, td->master
 #ifdef HAVE_LIBZMQ
-, td->socket
+, td->socketz
 #endif
 );
 
@@ -761,9 +1340,9 @@ void* thread_main(void *arg) {
 }
 
 void do_mutilate(const vector<string>& servers, options_t& options,
-                 ConnectionStats& stats, bool master
+                 ConnectionStats& stats, vector<queue<Operation*>*> *trace_queue, pthread_mutex_t* g_lock, unordered_map<string,vector<Operation*>> *g_wb_keys, bool master 
 #ifdef HAVE_LIBZMQ
-, zmq::socket_t* socket
+, zmq::socket_t* socketz
 #endif
 ) {
   int loop_flag =
@@ -775,76 +1354,84 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   struct evdns_base *evdns;
   struct event_config *config;
 
+
   if ((config = event_config_new()) == NULL) DIE("event_config_new() fail");
 
 #ifdef HAVE_DECL_EVENT_BASE_FLAG_PRECISE_TIMER
   if (event_config_set_flag(config, EVENT_BASE_FLAG_PRECISE_TIMER))
-    DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
+        DIE("event_config_set_flag(EVENT_BASE_FLAG_PRECISE_TIMER) fail");
 #endif
 
   if ((base = event_base_new_with_config(config)) == NULL)
     DIE("event_base_new() fail");
 
-  //  evthread_use_pthreads();
+  //evthread_use_pthreads();
 
   if ((evdns = evdns_base_new(base, 1)) == 0) DIE("evdns");
 
   //  event_base_priority_init(base, 2);
 
   // FIXME: May want to move this to after all connections established.
-  double start = get_time();
-  double now = start;
 
-  vector<Connection*> connections;
-  vector<Connection*> server_lead;
 
-  for (auto s: servers) {
-    // Split args.server_arg[s] into host:port using strtok().
-    char *s_copy = new char[s.length() + 1];
-    strcpy(s_copy, s.c_str());
+  if (servers.size() == 1) {
+    vector<Connection*> connections;
+    vector<Connection*> server_lead;
+    for (auto s: servers) { 
+      // Split args.server_arg[s] into host:port using strtok().
+      char *s_copy = new char[s.length() + 1];
+      strcpy(s_copy, s.c_str());
 
-    char *h_ptr = strtok_r(s_copy, ":", &saveptr);
-    char *p_ptr = strtok_r(NULL, ":", &saveptr);
+      char *h_ptr = strtok_r(s_copy, ":", &saveptr);
+      char *p_ptr = strtok_r(NULL, ":", &saveptr);
 
-    if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
+      if (h_ptr == NULL) DIE("strtok(.., \":\") failed to parse %s", s.c_str());
 
-    string hostname = h_ptr;
-    string port = "11211";
-    if (p_ptr) port = p_ptr;
+      string hostname = h_ptr;
+      string port = "11211";
+      if (p_ptr) port = p_ptr;
 
-    delete[] s_copy;
+      delete[] s_copy;
 
-    int conns = args.measure_connections_given ? args.measure_connections_arg :
-      options.connections;
+      int conns = args.measure_connections_given ? args.measure_connections_arg :
+        options.connections;
 
-    for (int c = 0; c < conns; c++) {
-      Connection* conn = new Connection(base, evdns, hostname, port, options,
-                                        args.agentmode_given ? false :
-                                        true);
-      connections.push_back(conn);
-      if (c == 0) server_lead.push_back(conn);
+      srand(time(NULL));
+      for (int c = 0; c <= conns; c++) {
+        Connection* conn = new Connection(base, evdns, hostname, port, options,
+                                          //NULL,//trace_queue,
+                                          args.agentmode_given ? false :
+                                          true);
+        int tries = 120;
+        int connected = 0;
+        int s = 2;
+        for (int i = 0; i < tries; i++) {
+          int ret = conn->do_connect();
+          if (ret) {
+              connected = 1;
+              fprintf(stderr,"thread %lu, conn: %d, connected!\n",pthread_self(),c+1);
+              break;
+          }
+          int d = s + rand() % 100;
+          //s = s + d;
+          
+          //fprintf(stderr,"conn: %d, sleeping %d\n",c,d);
+          sleep(d);
+        } 
+        if (connected) {
+          //fprintf(stderr,"cid %d gets trace_queue\nfirst: %s",conn->get_cid(),trace_queue->at(conn->get_cid())->front().c_str());
+          //conn->set_queue(trace_queue->at(conn->get_cid()));
+          //conn->set_lock(mutexes->at(conn->get_cid()));
+          connections.push_back(conn);
+        } else {
+          fprintf(stderr,"conn: %d, not connected!!\n",c);
+
+        }
+        if (c == 0) server_lead.push_back(conn);
+      }
     }
-  }
-
-  // Wait for all Connections to become IDLE.
-  while (1) {
-    // FIXME: If all connections become ready before event_base_loop
-    // is called, this will deadlock.
-    event_base_loop(base, EVLOOP_ONCE);
-
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->is_ready()) restart = true;
-
-    if (restart) continue;
-    else break;
-  }
-
-  // Load database on lead connection for each server.
-  if (!options.noload) {
-    V("Loading database.");
-
-    for (auto c: server_lead) c->start_loading();
+    double start = get_time();
+    double now = start;
 
     // Wait for all Connections to become IDLE.
     while (1) {
@@ -859,52 +1446,159 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       if (restart) continue;
       else break;
     }
-  }
 
-  if (options.loadonly) {
-    evdns_base_free(evdns, 0);
-    event_base_free(base);
-    return;
-  }
+    // Load database on lead connection for each server.
+    if (!options.noload) {
+      V("Loading database.");
 
-  // FIXME: Remove.  Not needed, testing only.
-  //  // FIXME: Synchronize start_time here across threads/nodes.
-  //  pthread_barrier_wait(&barrier);
+      for (auto c: server_lead) c->start_loading();
 
-  // Warmup connection.
-  if (options.warmup > 0) {
-    if (master) V("Warmup start.");
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If all connections become ready before event_base_loop
+        // is called, this will deadlock.
+        event_base_loop(base, EVLOOP_ONCE);
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->is_ready()) restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+    }
+
+    if (options.loadonly) {
+      evdns_base_free(evdns, 0);
+      event_base_free(base);
+      return;
+    }
+
+    // FIXME: Remove.  Not needed, testing only.
+    //  // FIXME: Synchronize start_time here across threads/nodes.
+    //  pthread_barrier_wait(&barrier);
+
+    // Warmup connection.
+    if (options.warmup > 0) {
+        if (master) V("Warmup start.");
+
+#ifdef HAVE_LIBZMQ
+        if (args.agent_given || args.agentmode_given) {
+          if (master) V("Synchronizing.");
+
+          // 1. thread barrier: make sure our threads ready before syncing agents
+          // 2. sync agents: all threads across all agents are now ready
+          // 3. thread barrier: don't release our threads until all agents ready
+          pthread_barrier_wait(&barrier);
+          if (master) sync_agent(socketz);
+          pthread_barrier_wait(&barrier);
+
+          if (master) V("Synchronized.");
+        }
+#endif
+
+      int old_time = options.time;
+      //    options.time = 1;
+
+      start = get_time();
+      for (Connection *conn: connections) {
+        conn->start_time = start;
+        conn->options.time = options.warmup;
+        conn->start(); // Kick the Connection into motion.
+      }
+
+      while (1) {
+        event_base_loop(base, loop_flag);
+
+        //#ifdef USE_CLOCK_GETTIME
+        //      now = get_time();
+        //#else
+        struct timeval now_tv;
+        event_base_gettimeofday_cached(base, &now_tv);
+        now = tv_to_double(&now_tv);
+        //#endif
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->check_exit_condition(now))
+            restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) {
+
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If there were to use EVLOOP_ONCE and all connections
+        // become ready before event_base_loop is called, this will
+        // deadlock.  We should check for IDLE before calling
+        // event_base_loop.
+        event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (!conn->is_ready()) restart = true;
+
+        if (restart) continue;
+        else break;
+      }
+      }
+
+      for (Connection *conn: connections) {
+        conn->reset();
+        conn->options.time = old_time;
+      }
+
+      if (master) V("Warmup stop.");
+    }
+
+
+    // FIXME: Synchronize start_time here across threads/nodes.
+    pthread_barrier_wait(&barrier);
+
+    if (master && args.wait_given) {
+      if (get_time() < boot_time + args.wait_arg) {
+        double t = (boot_time + args.wait_arg)-get_time();
+        V("Sleeping %.1fs for -W.", t);
+        sleep_time(t);
+      }
+    }
 
 #ifdef HAVE_LIBZMQ
     if (args.agent_given || args.agentmode_given) {
       if (master) V("Synchronizing.");
 
-      // 1. thread barrier: make sure our threads ready before syncing agents
-      // 2. sync agents: all threads across all agents are now ready
-      // 3. thread barrier: don't release our threads until all agents ready
       pthread_barrier_wait(&barrier);
-      if (master) sync_agent(socket);
+      if (master) sync_agent(socketz);
       pthread_barrier_wait(&barrier);
 
       if (master) V("Synchronized.");
     }
 #endif
 
-    int old_time = options.time;
-    //    options.time = 1;
+    if (master && !args.scan_given && !args.search_given)
+      V("started at %f", get_time());
 
     start = get_time();
     for (Connection *conn: connections) {
       conn->start_time = start;
-      conn->options.time = options.warmup;
       conn->start(); // Kick the Connection into motion.
     }
 
+    //  V("Start = %f", start);
+
+    // Main event loop.
     while (1) {
       event_base_loop(base, loop_flag);
 
-      //#ifdef USE_CLOCK_GETTIME
-      //      now = get_time();
+      //#if USE_CLOCK_GETTIME
+      //    now = get_time();
       //#else
       struct timeval now_tv;
       event_base_gettimeofday_cached(base, &now_tv);
@@ -920,108 +1614,613 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       else break;
     }
 
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->is_ready()) restart = true;
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
 
-    if (restart) {
+    // Tear-down and accumulate stats.
+    for (Connection *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
 
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  } else if (servers.size() == 2 && !(args.approx_given || args.approx_batch_given || args.use_shm_given || args.use_shm_batch_given)) {
+    vector<ConnectionMulti*> connections;
+    vector<ConnectionMulti*> server_lead;
+
+    string hostname1 = servers[0];
+    string hostname2 = servers[1];
+    string port = "11211";
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+      int fd1 = -1;
+
+      if ( (fd1 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        exit(-1);
+      }
+
+      struct sockaddr_un sin1;
+      memset(&sin1, 0, sizeof(sin1));
+      sin1.sun_family = AF_LOCAL;
+      strcpy(sin1.sun_path, hostname1.c_str());
+
+      fcntl(fd1, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      int addrlen;
+      addrlen = sizeof(sin1);
+
+      int max_tries = 50;
+      int n_tries = 0;
+      int s = 10;
+      while (connect(fd1, (struct sockaddr*)&sin1, addrlen) == -1) {
+        perror("l1 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l1 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+      
+      int fd2 = -1;
+      if ( (fd2 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("l2 socket error");
+        exit(-1);
+      }
+      struct sockaddr_un sin2;
+      memset(&sin2, 0, sizeof(sin2));
+      sin2.sun_family = AF_LOCAL;
+      strcpy(sin2.sun_path, hostname2.c_str());
+      fcntl(fd2, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      addrlen = sizeof(sin2);
+      n_tries = 0;
+      s = 10;
+      while (connect(fd2, (struct sockaddr*)&sin2, addrlen) == -1) {
+        perror("l2 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l2 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+
+
+      ConnectionMulti* conn = new ConnectionMulti(base, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true, fd1, fd2);
+     
+      int connected = 0;
+      if (conn) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+
+    fprintf(stderr,"thread %ld gtg\n",pthread_self());
     // Wait for all Connections to become IDLE.
     while (1) {
-      // FIXME: If there were to use EVLOOP_ONCE and all connections
-      // become ready before event_base_loop is called, this will
-      // deadlock.  We should check for IDLE before calling
-      // event_base_loop.
-      event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
 
       bool restart = false;
-      for (Connection *conn: connections)
+      for (ConnectionMulti *conn: connections)
         if (!conn->is_ready()) restart = true;
 
       if (restart) continue;
       else break;
     }
+   
+    
+
+    double start = get_time();
+    double now = start;
+    for (ConnectionMulti *conn: connections) {
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+    } 
+    //fprintf(stderr,"Start = %f\n", start);
+
+    // Main event loop.
+    while (1) {
+      event_base_loop(base, loop_flag);
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+
+      bool restart = false;
+      for (ConnectionMulti *conn: connections) {
+        if (!conn->check_exit_condition(now)) {
+          restart = true;
+        }
+      }
+      if (restart) continue;
+      else break;
+
     }
 
-    for (Connection *conn: connections) {
-      conn->reset();
-      conn->options.time = old_time;
+
+    //  V("Start = %f", start);
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMulti *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
     }
 
-    if (master) V("Warmup stop.");
-  }
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  } else if (servers.size() == 2 && args.approx_given) {
+    vector<ConnectionMultiApprox*> connections;
+    vector<ConnectionMultiApprox*> server_lead;
+
+    string hostname1 = servers[0];
+    string hostname2 = servers[1];
+    string port = "11211";
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+      int fd1 = -1;
+
+      if ( (fd1 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        exit(-1);
+      }
+
+      struct sockaddr_un sin1;
+      memset(&sin1, 0, sizeof(sin1));
+      sin1.sun_family = AF_LOCAL;
+      strcpy(sin1.sun_path, hostname1.c_str());
+
+      fcntl(fd1, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      int addrlen;
+      addrlen = sizeof(sin1);
+
+      int max_tries = 50;
+      int n_tries = 0;
+      int s = 10;
+      while (connect(fd1, (struct sockaddr*)&sin1, addrlen) == -1) {
+        perror("l1 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l1 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+      
+      int fd2 = -1;
+      if ( (fd2 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("l2 socket error");
+        exit(-1);
+      }
+      struct sockaddr_un sin2;
+      memset(&sin2, 0, sizeof(sin2));
+      sin2.sun_family = AF_LOCAL;
+      strcpy(sin2.sun_path, hostname2.c_str());
+      fcntl(fd2, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      addrlen = sizeof(sin2);
+      n_tries = 0;
+      s = 10;
+      while (connect(fd2, (struct sockaddr*)&sin2, addrlen) == -1) {
+        perror("l2 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l2 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
 
 
-  // FIXME: Synchronize start_time here across threads/nodes.
-  pthread_barrier_wait(&barrier);
+      ConnectionMultiApprox* conn = new ConnectionMultiApprox(base, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true, fd1, fd2);
+     
+      int connected = 0;
+      if (conn) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
 
-  if (master && args.wait_given) {
-    if (get_time() < boot_time + args.wait_arg) {
-      double t = (boot_time + args.wait_arg)-get_time();
-      V("Sleeping %.1fs for -W.", t);
-      sleep_time(t);
+      }
     }
-  }
-
-#ifdef HAVE_LIBZMQ
-  if (args.agent_given || args.agentmode_given) {
-    if (master) V("Synchronizing.");
-
+    
+    // wait for all threads to reach here
     pthread_barrier_wait(&barrier);
-    if (master) sync_agent(socket);
+
+    fprintf(stderr,"thread %ld gtg\n",pthread_self());
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
+
+      bool restart = false;
+      for (ConnectionMultiApprox *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+   
+    
+
+    double start = get_time();
+    double now = start;
+    for (ConnectionMultiApprox *conn: connections) {
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+    } 
+    //fprintf(stderr,"Start = %f\n", start);
+
+    // Main event loop.
+    while (1) {
+      event_base_loop(base, loop_flag);
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+
+      bool restart = false;
+      for (ConnectionMultiApprox *conn: connections) {
+        if (!conn->check_exit_condition(now)) {
+          restart = true;
+        }
+      }
+      if (restart) continue;
+      else break;
+
+    }
+
+
+    //  V("Start = %f", start);
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApprox *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  
+  } else if (servers.size() == 2 && args.approx_batch_given) {
+    vector<ConnectionMultiApproxBatch*> connections;
+    vector<ConnectionMultiApproxBatch*> server_lead;
+
+    string hostname1 = servers[0];
+    string hostname2 = servers[1];
+    string port = "11211";
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+      int fd1 = -1;
+
+      if ( (fd1 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("socket error");
+        exit(-1);
+      }
+
+      struct sockaddr_un sin1;
+      memset(&sin1, 0, sizeof(sin1));
+      sin1.sun_family = AF_LOCAL;
+      strcpy(sin1.sun_path, hostname1.c_str());
+
+      fcntl(fd1, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      int addrlen;
+      addrlen = sizeof(sin1);
+
+      int max_tries = 50;
+      int n_tries = 0;
+      int s = 10;
+      while (connect(fd1, (struct sockaddr*)&sin1, addrlen) == -1) {
+        perror("l1 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l1 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+      
+      int fd2 = -1;
+      if ( (fd2 = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        perror("l2 socket error");
+        exit(-1);
+      }
+      struct sockaddr_un sin2;
+      memset(&sin2, 0, sizeof(sin2));
+      sin2.sun_family = AF_LOCAL;
+      strcpy(sin2.sun_path, hostname2.c_str());
+      fcntl(fd2, F_SETFL, O_NONBLOCK); /* Change the socket into non-blocking state   */
+      addrlen = sizeof(sin2);
+      n_tries = 0;
+      s = 10;
+      while (connect(fd2, (struct sockaddr*)&sin2, addrlen) == -1) {
+        perror("l2 connect error");
+        if (n_tries++ > max_tries) {
+            fprintf(stderr,"conn l2 %d unable to connect after sleep for %d\n",c+1,s);
+            exit(-1);
+        }
+        int d = s + rand() % 100;
+        usleep(d);
+        s = (int)((double)s*1.25);
+      }
+
+
+      ConnectionMultiApproxBatch* conn = new ConnectionMultiApproxBatch(base, evdns, 
+              hostname1, hostname2, port, options,args.agentmode_given ? false : true, fd1, fd2);
+     
+      int connected = 0;
+      if (conn) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets l1 fd %d l2 fd %d\n",cid,fd1,fd2);
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
     pthread_barrier_wait(&barrier);
 
-    if (master) V("Synchronized.");
+    fprintf(stderr,"thread %ld gtg\n",pthread_self());
+    // Wait for all Connections to become IDLE.
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loop
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
+
+      bool restart = false;
+      for (ConnectionMultiApproxBatch *conn: connections)
+        if (!conn->is_ready()) restart = true;
+
+      if (restart) continue;
+      else break;
+    }
+   
+    
+
+    double start = get_time();
+    double now = start;
+    for (ConnectionMultiApproxBatch *conn: connections) {
+        conn->start_time = start;
+        conn->start(); // Kick the Connection into motion.
+    } 
+    //fprintf(stderr,"Start = %f\n", start);
+
+    // Main event loop.
+    while (1) {
+      event_base_loop(base, loop_flag);
+      struct timeval now_tv;
+      event_base_gettimeofday_cached(base, &now_tv);
+      now = tv_to_double(&now_tv);
+
+      bool restart = false;
+      for (ConnectionMultiApproxBatch *conn: connections) {
+        if (!conn->check_exit_condition(now)) {
+          restart = true;
+        }
+      }
+      if (restart) continue;
+      else {
+          for (ConnectionMultiApproxBatch *conn: connections) {
+              fprintf(stderr,"tid %ld, cid: %d\n",pthread_self(),conn->get_cid());
+          }
+          break;
+      }
+
+    }
+
+
+    //  V("Start = %f", start);
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxBatch *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+
+    stats.start = start;
+    stats.stop = now;
+
+    event_config_free(config);
+    evdns_base_free(evdns, 0);
+    event_base_free(base);
+  } else if (servers.size() == 2 && args.use_shm_given) {
+    vector<ConnectionMultiApproxShm*> connections;
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+
+      ConnectionMultiApproxShm* conn = new ConnectionMultiApproxShm(options,args.agentmode_given ? false : true);
+      int connected = 0;
+      if (conn && conn->do_connect()) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+    double start = get_time();
+    fprintf(stderr,"Start = %f\n", start);
+    double now = start;
+    for (ConnectionMultiApproxShm *conn: connections) {
+        conn->start_time = now;
+        conn->drive_write_machine_shm(now);
+    }
+
+
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxShm *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+    double stop = get_time();
+    fprintf(stderr,"Stop = %f\n", stop);
+    stats.start = start;
+    stats.stop = stop;
+
+
+  } else if (servers.size() == 2 && args.use_shm_batch_given) {
+    vector<ConnectionMultiApproxBatchShm*> connections;
+
+    int conns = args.measure_connections_given ? args.measure_connections_arg :
+      options.connections;
+
+    srand(time(NULL));
+    for (int c = 0; c < conns; c++) {
+
+
+      ConnectionMultiApproxBatchShm* conn = new ConnectionMultiApproxBatchShm(options,args.agentmode_given ? false : true);
+      int connected = 0;
+      if (conn && conn->do_connect()) {
+          connected = 1;
+      }
+      int cid = conn->get_cid();
+      
+      if (connected) {
+        fprintf(stderr,"cid %d gets trace_queue\nfirst: %s\n",cid,trace_queue->at(cid)->front()->key);
+        if (g_lock != NULL) {
+            conn->set_g_wbkeys(g_wb_keys);
+            conn->set_lock(g_lock);
+        }
+        conn->set_queue(trace_queue->at(cid));
+        connections.push_back(conn);
+      } else {
+        fprintf(stderr,"conn multi: %d, not connected!!\n",c);
+
+      }
+    }
+    
+    // wait for all threads to reach here
+    pthread_barrier_wait(&barrier);
+    double start = get_time();
+    fprintf(stderr,"Start = %f\n", start);
+    double now = start;
+    for (ConnectionMultiApproxBatchShm *conn: connections) {
+        conn->start_time = now;
+        conn->drive_write_machine_shm(now);
+    }
+
+
+
+    if (master && !args.scan_given && !args.search_given)
+      V("stopped at %f  options.time = %d", get_time(), options.time);
+
+    // Tear-down and accumulate stats.
+    for (ConnectionMultiApproxBatchShm *conn: connections) {
+      stats.accumulate(conn->stats);
+      delete conn;
+    }
+    double stop = get_time();
+    fprintf(stderr,"Stop = %f\n", stop);
+    stats.start = start;
+    stats.stop = stop;
+
+
   }
-#endif
-
-  if (master && !args.scan_given && !args.search_given)
-    V("started at %f", get_time());
-
-  start = get_time();
-  for (Connection *conn: connections) {
-    conn->start_time = start;
-    conn->start(); // Kick the Connection into motion.
-  }
-
-  //  V("Start = %f", start);
-
-  // Main event loop.
-  while (1) {
-    event_base_loop(base, loop_flag);
-
-    //#if USE_CLOCK_GETTIME
-    //    now = get_time();
-    //#else
-    struct timeval now_tv;
-    event_base_gettimeofday_cached(base, &now_tv);
-    now = tv_to_double(&now_tv);
-    //#endif
-
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (!conn->check_exit_condition(now))
-        restart = true;
-
-    if (restart) continue;
-    else break;
-  }
-
-  if (master && !args.scan_given && !args.search_given)
-    V("stopped at %f  options.time = %d", get_time(), options.time);
-
-  // Tear-down and accumulate stats.
-  for (Connection *conn: connections) {
-    stats.accumulate(conn->stats);
-    delete conn;
-  }
-
-  stats.start = start;
-  stats.stop = now;
-
-  event_config_free(config);
-  evdns_base_free(evdns, 0);
-  event_base_free(base);
 }
 
 void args_to_options(options_t* options) {
@@ -1032,6 +2231,16 @@ void args_to_options(options_t* options) {
   options->threads = args.threads_arg;
   options->server_given = args.server_given;
   options->roundrobin = args.roundrobin_given;
+  options->apps = args.apps_arg;
+  options->rand_admit = args.rand_admit_arg;
+  options->threshold = args.threshold_arg;
+  options->wb_all = args.wb_all_arg;
+  options->ratelimit = args.ratelimit_given;
+  options->v1callback = args.v1callback_given;
+  if (args.inclusives_given) {
+    memset(options->inclusives,0,256);
+    strncpy(options->inclusives,args.inclusives_arg,256);
+  }
 
   int connections = options->connections;
   if (options->roundrobin) {
@@ -1058,7 +2267,38 @@ void args_to_options(options_t* options) {
   //  else
   options->records = args.records_arg / options->server_given;
 
+  options->queries = args.queries_arg / options->server_given;
+  
+  options->misswindow = args.misswindow_arg;
+
+  options->use_assoc = args.assoc_given;
+  options->assoc = args.assoc_arg;
+  options->twitter_trace = args.twitter_trace_arg;
+
+  options->unix_socket = args.unix_socket_given;
+  options->miss_through = args.miss_through_given;
+  options->successful_queries = args.successful_given;
   options->binary = args.binary_given;
+  options->redis = args.redis_given;
+ 
+  if (options->use_assoc && !options->redis)
+        DIE("assoc must be used with redis");
+
+  options->read_file = args.read_file_given;
+  if (args.read_file_given)
+    strcpy(options->file_name, args.read_file_arg);
+
+  if (args.prefix_given)
+      strcpy(options->prefix,args.prefix_arg);
+
+  //getset mode (first issue get, then set same key if miss)
+  options->getset = args.getset_given;
+  options->getsetorset = args.getsetorset_given;
+  //delete 90 percent of keys after halfway
+  //model workload in Rumble and Ousterhout - log structured memory
+  //for dram based storage
+  options->delete90 = args.delete90_given;
+
   options->sasl = args.username_given;
   
   if (args.password_given)

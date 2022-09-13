@@ -10,11 +10,45 @@ option "quiet" - "Disable log messages."
 
 text "\nBasic options:"
 
+option "use_shm" - "use shared memory"
+option "use_shm_batch" - "use shared memory BATCHED"
+option "ratelimit" - "limit conns from exceeding each other in requests"
+option "v1callback" - "use v1 readcallbacks"
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
+option "unix_socket" - "Use UNIX socket instead of TCP."
+option "approx" - "approximate two level caching with inclusive/exclusive"
+option "approx_batch" - "approximate two level caching with inclusive/exclusive and batching of reqs"
+option "inclusives" - "give a list of 1 == inclusive, 2 == exclusives for each class" string default=""
 option "binary" - "Use binary memcached protocol instead of ASCII."
+option "redis"  - "Use Redis RESP protocol instead of memchached."
+option "getset" - "Use getset mode, in getset mode we first issue \
+a GET and if the response is MISS, then issue a SET for on that
+key following distribution value."
+option "getsetorset" - "Use getset mode and allow for direct writes (with optype == 2)."
+option "successful" - "Only record latency and throughput stats for successful queries"
+option "prefix" - "Prefix all keys with a string (helps with multi-tennant eval)" string
+option "delete90" - "Delete 90 percent of keys after halfway through \
+                     the workload, used to model Rumbel et. al. USENIX \
+                     FAST '14 workloads. MUST BE IN GETSET MODE and 
+                     have a set number of queries"
+
+option "assoc" - "We create hash tables by taking the truncating the \
+                   key by b bytes. The n-b bytes are the key for redis, in the original \
+                   (key,value). The value is a hash table and we acess field \
+                   b to get the value. Essentially this makes redis n-way \
+                   associative cache. Only works in redis mode. For small key \
+                   sizes we just use normal method of (key,value) store. No hash table." int default="4"
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
+option "apps" - "Number of apps, should eqaul total conns" int default="1"
+option "rand_admit" - "random admission to nvm" int default="0"
+option "wb_all" - "all admission to nvm" int default="1"
+option "threshold" - "admission to nvm if in top n" int default="0"
+option "miss_through" - "All sets are considered dirty, expect for miss driven sets"
+
+option "read_file"  - "Read keys from file." string default=""
+option "twitter_trace"  - "use twitter memcached trace format from file." int default="0"
 
 option "keysize" K "Length of memcached keys (distribution)."
        string default="30"
@@ -24,6 +58,14 @@ option "valuesize" V "Length of memcached values (distribution)."
 option "records" r "Number of memcached records to use.  \
 If multiple memcached servers are given, this number is divided \
 by the number of servers." int default="10000"
+
+option "misswindow" m  "Window for recording misses, used to find \
+                       steady state, no window by default, which \
+                       gives us summary stats in total" int default="0"
+
+option "queries" N "Number of queries to make. 0 is unlimited (default)  \
+If multiple memcached servers are given, this number is divided \
+by the number of servers." int default="0"
 
 option "update" u "Ratio of set:get commands." float default="0.0"
 

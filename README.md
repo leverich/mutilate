@@ -117,7 +117,7 @@ client-side queuing delay adulterating the latency measurements.
 Command-line Options
 ====================
 
-    mutilate3 0.1
+    mutilate 0.1
     
     Usage: mutilate -s server[:port] [options]
     
@@ -129,20 +129,60 @@ Command-line Options
           --quiet                   Disable log messages.
     
     Basic options:
-      -s, --server=STRING           Memcached server hostname[:port].  Repeat to 
+      -s, --server=STRING           Memcached server hostname[:port].  Repeat to
                                       specify multiple servers.
+          --unix_socket             Use UNIX socket instead of TCP.
           --binary                  Use binary memcached protocol instead of ASCII.
-      -q, --qps=INT                 Target aggregate QPS. 0 = peak QPS.  
+          --redis                   Use Redis RESP protocol instead of memchached.
+          --getset                  Use getset mode, in getset mode we first issue
+                                      a GET and if the response is MISS, then issue
+                                      a SET for on that
+                                      key following distribution value.
+          --getsetorset             Use getset mode and allow for direct writes
+                                      (with optype == 2).
+          --successful              Only record latency and throughput stats for
+                                      successful queries
+          --prefix=STRING           Prefix all keys with a string (helps with
+                                      multi-tennant eval)
+          --delete90                Delete 90 percent of keys after halfway through
+                                      the workload, used to model Rumbel et. al.
+                                      USENIX                      FAST '14
+                                      workloads. MUST BE IN GETSET MODE and 
+                                                           have a set number of
+                                      queries
+          --assoc=INT               We create hash tables by taking the truncating
+                                      the                    key by b bytes. The
+                                      n-b bytes are the key for redis, in the
+                                      original                    (key,value). The
+                                      value is a hash table and we acess field
+                                      b to get the value. Essentially this makes
+                                      redis n-way                    associative
+                                      cache. Only works in redis mode. For small
+                                      key                    sizes we just use
+                                      normal method of (key,value) store. No hash
+                                      table.  (default=`4')
+      -q, --qps=INT                 Target aggregate QPS. 0 = peak QPS.
                                       (default=`0')
       -t, --time=INT                Maximum time to run (seconds).  (default=`5')
-      -K, --keysize=STRING          Length of memcached keys (distribution).  
+          --read_file=STRING        Read keys from file.  (default=`')
+          --twitter_trace=INT       use twitter memcached trace format from file.
+                                      (default=`0')
+      -K, --keysize=STRING          Length of memcached keys (distribution).
                                       (default=`30')
-      -V, --valuesize=STRING        Length of memcached values (distribution).  
+      -V, --valuesize=STRING        Length of memcached values (distribution).
                                       (default=`200')
-      -r, --records=INT             Number of memcached records to use.  If 
-                                      multiple memcached servers are given, this 
-                                      number is divided by the number of servers.  
+      -r, --records=INT             Number of memcached records to use.  If
+                                      multiple memcached servers are given, this
+                                      number is divided by the number of servers.
                                       (default=`10000')
+      -m, --misswindow=INT          Window for recording misses, used to find
+                                      steady state, no window by default, which
+                                      gives us summary stats in total
+                                      (default=`0')
+      -N, --queries=INT             Number of queries to make. 0 is unlimited
+                                      (default)  If multiple memcached servers are
+                                      given, this number is divided by the number
+                                      of servers.  (default=`0')
       -u, --update=FLOAT            Ratio of set:get commands.  (default=`0.0')
     
     Advanced options:
@@ -150,34 +190,34 @@ Command-line Options
       -P, --password=STRING         Password to use for SASL authentication.
       -T, --threads=INT             Number of threads to spawn.  (default=`1')
           --affinity                Set CPU affinity for threads, round-robin
-      -c, --connections=INT         Connections to establish per server.  
+      -c, --connections=INT         Connections to establish per server.
                                       (default=`1')
-      -d, --depth=INT               Maximum depth to pipeline requests.  
+      -d, --depth=INT               Maximum depth to pipeline requests.
                                       (default=`1')
-      -R, --roundrobin              Assign threads to servers in round-robin 
-                                      fashion.  By default, each thread connects to 
+      -R, --roundrobin              Assign threads to servers in round-robin
+                                      fashion.  By default, each thread connects to
                                       every server.
-      -i, --iadist=STRING           Inter-arrival distribution (distribution).  
-                                      Note: The distribution will automatically be 
-                                      adjusted to match the QPS given by --qps.  
+      -i, --iadist=STRING           Inter-arrival distribution (distribution).
+                                      Note: The distribution will automatically be
+                                      adjusted to match the QPS given by --qps.
                                       (default=`exponential')
-      -S, --skip                    Skip transmissions if previous requests are 
-                                      late.  This harms the long-term QPS average, 
-                                      but reduces spikes in QPS after long latency 
+      -S, --skip                    Skip transmissions if previous requests are
+                                      late.  This harms the long-term QPS average,
+                                      but reduces spikes in QPS after long latency
                                       requests.
-          --moderate                Enforce a minimum delay of ~1/lambda between 
+          --moderate                Enforce a minimum delay of ~1/lambda between
                                       requests.
           --noload                  Skip database loading.
           --loadonly                Load database and then exit.
       -B, --blocking                Use blocking epoll().  May increase latency.
           --no_nodelay              Don't use TCP_NODELAY.
       -w, --warmup=INT              Warmup time before starting measurement.
-      -W, --wait=INT                Time to wait after startup to start 
+      -W, --wait=INT                Time to wait after startup to start
                                       measurement.
           --save=STRING             Record latency samples to given file.
-          --search=N:X              Search for the QPS where N-order statistic < 
-                                      Xus.  (i.e. --search 95:1000 means find the 
-                                      QPS where 95% of requests are faster than 
+          --search=N:X              Search for the QPS where N-order statistic <
+                                      Xus.  (i.e. --search 95:1000 means find the
+                                      QPS where 95% of requests are faster than
                                       1000us).
           --scan=min:max:step       Scan latency across QPS rates from min to max.
     
@@ -185,11 +225,11 @@ Command-line Options
       -A, --agentmode               Run client in agent mode.
       -a, --agent=host              Enlist remote agent.
       -p, --agent_port=STRING       Agent port.  (default=`5556')
-      -l, --lambda_mul=INT          Lambda multiplier.  Increases share of QPS for 
+      -l, --lambda_mul=INT          Lambda multiplier.  Increases share of QPS for
                                       this client.  (default=`1')
-      -C, --measure_connections=INT Master client connections per server, overrides 
+      -C, --measure_connections=INT Master client connections per server, overrides
                                       --connections.
-      -Q, --measure_qps=INT         Explicitly set master client QPS, spread across 
+      -Q, --measure_qps=INT         Explicitly set master client QPS, spread across
                                       threads and connections.
       -D, --measure_depth=INT       Set master client connection depth.
     
